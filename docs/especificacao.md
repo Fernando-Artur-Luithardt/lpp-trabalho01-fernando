@@ -1,6 +1,6 @@
 # Especificação — Vila em Tempo Real
 
-**Integrante(s):** (nome e @ do GitHub)
+**Integrante(s):** (Fernando Artur Luithardt @Fernando-Artur-Luithardt)
 **Tipo de vila (sorteio):** 2 — Fazenda (trigo → farinha; construção: moinho; trabalhadores: agricultores; o que expira: a colheita estraga se não for coletada)
 
 > Documento escrito ANTES do código. Descreve o comportamento na linguagem da fazenda, sem citar tecnologia.
