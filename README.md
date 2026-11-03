@@ -1,9 +1,10 @@
 # Vila em Tempo Real — Fazenda (tema 19)
 
-Etapas 1 e 2 implementadas: conexão, sincronização privada e abertura única da
-temporada pelo Mestre. O servidor mantém uma fazenda compartilhada em memória.
-Encerrar, construir, produzir, moer e coletar pertencem às próximas etapas;
-seus controles permanecem desabilitados nesta entrega.
+Etapas 1–3 implementadas: conexão, sincronização privada, abertura única pelo
+Mestre e construções solicitadas pelos jogadores. O servidor mantém uma fazenda
+compartilhada em memória. Cada obra aceita custa 50 de trigo e ocupa um dos três
+agricultores. Conclusão automática, produção, moagem, coleta e encerramento
+pertencem às próximas etapas.
 
 ## Integrantes
 
@@ -91,8 +92,8 @@ git diff --check
 Os scripts em `/tmp` foram instrumentos temporários desta verificação e não
 integram o repositório. O roteiro com abas acima é reproduzível em uma instalação
 nova. A suíte permanente `tests/test_server.py` foi acrescentada em T010,
-na Etapa 2, descrita abaixo. Entrada durante obra, barras e demais eventos de
-atividade serão verificados nas respectivas etapas.
+na Etapa 2, descrita abaixo. Entrada durante obra e barras foram verificadas na
+Etapa 3; os demais eventos de atividade serão verificados nas respectivas etapas.
 
 ## Como testar a abertura — Etapa 2
 
@@ -164,6 +165,104 @@ visível. A verificação M/A/B registrada aqui foi automatizada, com inspeção
 captura da tela do Mestre; não é uma declaração de execução manual humana.
 Produção e demais funcionalidades de etapas posteriores não foram antecipadas.
 
+## Como testar construções e recusas — Etapa 3
+
+1. Inicie um servidor novo e entre em três abas: **Mestre**, **Jogador A** e
+   **Jogador B**. Com a fase aguardando, A clica **Construir**. Somente A deve
+   receber `operacao.recusada`, motivo **A temporada não está aberta**.
+   Todas as abas continuam com 150 de trigo, zero obras e zero agricultores ocupados.
+2. M abre a temporada; A clica **Construir**. O painel de A registra o pedido
+   `construcao.solicitada`. As três abas recebem `construcao.iniciada`, causa
+   `construcao.solicitada`, `custo: 50` e o mesmo `obra_id`. O estado passa a
+   **100 trigo, 1/3 agricultores, 1 obra e 0 moinhos concluídos**.
+3. Após cerca de dois segundos, B constrói outra obra. Confira duas identidades,
+   50 de trigo, ocupação 2/3 e barras com progressos diferentes. A primeira barra
+   não deve reiniciar quando a segunda obra aparece.
+4. Recarregue B e entre novamente. O snapshot privado contém as mesmas obras e
+   os mesmos `iniciada_em_ms`/`concluir_em_ms`. As barras mostram o tempo decorrido,
+   sem repetir o texto de débito; M/A não recebem eventos pela entrada de B.
+   Repita com interrupção da conexão conforme o roteiro de conexão acima.
+5. A constrói a terceira obra: trigo 0, ocupação 3/3 e três identidades distintas.
+   Uma quarta tentativa recebe **Trigo insuficiente** somente no solicitante:
+   a validação do estoque vem antes da disponibilidade de agricultor.
+6. Aguarde mais de oito segundos desde a última construção. As barras podem
+   completar, mas continuam três obras em andamento, três agricultores ocupados,
+   zero moinhos concluídos e os mesmos estoques. A conclusão automática e a
+   produção só serão implementadas na **Etapa 4**.
+7. Execute a suíte para conferir os estados que exigem preparação controlada:
+   49 trigo, exatamente 50 com vaga, três ocupados com pelo menos 50, três ocupados
+   com 49 e pedidos diretos de Mestre. Não há controles de administração para
+   alterar estoque/obras na aplicação. Reinicie o servidor para um novo ensaio.
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+O botão Construir existe somente para Jogador e permanece disponível enquanto
+conectado, permitindo demonstrar as recusas do servidor. A ordem é **fase → papel
+→ trigo → agricultor**. O prazo público orienta apenas a barra; o cliente não
+decide conclusão, débito ou liberação de agricultor. Ao voltar a uma aba oculta,
+o desenho retoma usando o prazo original.
+
+## Evidência da Etapa 3 — V3
+
+Verificação em **2026-11-03**, sobre a Etapa 2 (`46e2f7b`), para o commit
+`feat: valida construções e recusas por jogador`. Mesmo ambiente das etapas
+anteriores, um processo Uvicorn e três páginas reais do Chrome headless com M/A/B.
+
+| Condição / ação | Resultado observado |
+| --- | --- |
+| A constrói antes da abertura | Recusa privada por fase; estado preservado e painéis de M/B inalterados. |
+| M pede construção diretamente, antes/depois da abertura | “A temporada não está aberta” antes; “Só o Jogador pode construir” depois, inclusive com `papel: jogador` no payload. |
+| A clica Construir após abertura | No mesmo turno do clique, ainda 150 trigo e nenhum desenho; após o fato global, 100 trigo, ocupação 1/3 e obra 1 nas três páginas. |
+| B constrói com custo/prazo/identidade falsos no payload | Servidor aplica custo 50, prazo 8 s e identidade 2; três páginas passam a 50 trigo e ocupação 2/3. |
+| Entrada tardia de B com duas obras | Mesmos registros e prazos; barras em aproximadamente 32% e 4%, nenhum texto de custo repetido, dois canteiros e duas barras. M/A sem novos eventos. |
+| Reconexão de B | Mesmo canvas e primeiro sprite, mesmas duas identidades, uma escuta de construção e nenhum desenho duplicado. |
+| Terceira obra e quarta tentativa | Obra 3 aceita globalmente, trigo 0 e ocupação 3/3; tentativa seguinte recusada somente em B por trigo insuficiente. |
+| Mais de oito segundos após a última obra | Nas três páginas: trigo 0, farinha 0, ocupação 3/3, três canteiros, zero concluídas e nenhum evento de conclusão/produção. Barras cheias somente indicativas. |
+| Painel e cena | Pedido/fato/recusa classificados corretamente, causa/dados/reação visíveis; 12 objetos persistentes por cena (mapa/faixa e três conjuntos canteiro/fundo/barra). Nenhuma exceção JavaScript. |
+
+**Testes permanentes: 17 aprovados**, incluindo os 11 anteriores e seis novos
+testes, um deles com dez combinações de recusa. Os testes novos foram executados
+antes do tratador e falharam pela ausência de `construcao.solicitada`; depois
+passaram. A matriz de validação confirmou:
+
+| Estado controlado | Resultado |
+| --- | --- |
+| Fase aguardando/encerrada, Jogador ou Mestre | Recusa por fase antes de papel/estoque/ocupação. |
+| Mestre na fase aberta, inclusive com 49 trigo e três ocupados | “Só o Jogador pode construir”. |
+| Jogador com 49 trigo, com vaga ou três ocupados | “Trigo insuficiente”. |
+| Jogador com exatamente 50 trigo e vaga | Uma obra, um débito de 50 e um agricultor ocupado. |
+| Jogador com três ocupados e 50 ou 100 trigo | “Sem agricultor livre”, sem mutação ou consumo de identidade. |
+| Vinte moinhos concluídos preparados no teste | Não ocupam agricultores nem impedem uma nova obra; não há limite pelo total de moinhos. |
+
+Também foram conferidos snapshots copiados, identidades crescentes, prazos
+monotônicos e públicos, privacidade, entrada tardia após o prazo e reavaliação
+do estoque após esperar pelo lock. Todos os estados artificiais ficaram nos
+testes, em processo separado da aplicação.
+
+O ensaio visual detectou e corrigiu a classificação de `construcao.solicitada`:
+o classificador do kit reconhecia somente o sufixo com sublinhado. Agora aceita
+ponto e sublinhado. Os dados de obras também quebram linhas no painel; uma
+conferência adicional com três obras confirmou ausência de transbordamento
+horizontal. As abas foram trazidas à frente para verificar barras e aguardar o
+fim dos textos temporários, pois o Chrome suspende animações em abas ocultas.
+
+Comandos executados:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+node /tmp/fazenda-etapa3-browser.mjs
+node /tmp/fazenda-etapa3-layout.mjs
+git diff --check
+```
+
+Os scripts de navegador são temporários, externos ao repositório. A suíte Python
+e o roteiro acima permitem repetir a verificação. **Verificação manual pendente:**
+repetição humana de V3 em três abas visíveis. O ensaio M/A/B foi automatizado e a
+captura de B foi inspecionada; não foi uma execução manual humana. A repetição
+humana de V2 anteriormente registrada também continua pendente.
+
 ## Perguntas
 
 1. **Quais eventos o sistema emite e escuta nesta etapa?** O servidor trata
@@ -172,10 +271,13 @@ Produção e demais funcionalidades de etapas posteriores não foram antecipadas
    esse fato e os eventos de transporte `connect`, `disconnect` e `connect_error`.
    Na Etapa 2, também emite `vila.abertura_solicitada` e escuta `vila.iniciada`
    e `operacao.recusada`, com registro e reação via `pedir()` e `ouvir()`.
+   Na Etapa 3, o Jogador emite `construcao.solicitada`; o servidor responde com
+   `construcao.iniciada` global ou `operacao.recusada` privada.
 2. **Como sabe quando atualizar os outros jogadores?** O estado pertence ao
    servidor. Nesta etapa, entrar não muda a fazenda, então somente quem entrou
-   recebe o snapshot. Ao aceitar a abertura, `publicar` envia `vila.iniciada`
-   para todos; quando um pedido falha, `recusar` envia `operacao.recusada`
+   recebe o snapshot. Ao aceitar abertura ou construção, `publicar` envia
+   `vila.iniciada` ou `construcao.iniciada` para todos; quando um pedido falha,
+   `recusar` envia `operacao.recusada`
    somente ao `sid` solicitante, com o estado inalterado.
 3. **Onde aparece o paradigma orientado a eventos?** Em `server.py`, o tratador
    `connect` publica o estado com causa `conexao`. Em `client/index.html`,
@@ -185,6 +287,9 @@ Produção e demais funcionalidades de etapas posteriores não foram antecipadas
    A abertura segue o encadeamento `pedir` → tratador `abrir_vila` →
    `vila.iniciada` → `atualizar`/`jogo.vilaIniciada`; a recusa usa
    `avisar`/`jogo.recusado` e explica que o pedido não alterou o estado.
+   A construção segue `pedir` → tratador `construir` → `construcao.iniciada` →
+   `atualizar`/`jogo.obraIniciada`. O snapshot reconcilia canteiros e barras por
+   identidade sem reproduzir débitos.
 
 ## Uso de IA
 
@@ -193,6 +298,9 @@ servidor, sincronização privada, adaptação do cliente e painel, reconciliaç
 cena e este roteiro. Foram reaproveitados o kit, seus métodos e os assets existentes.
 Na Etapa 2, auxiliou no tratador de abertura, nas recusas privadas, nas escutas
 do cliente, nos 11 testes permanentes e no roteiro automatizado com M/A/B.
+Na Etapa 3, auxiliou na validação de construções, nos registros individuais,
+nas barras indicativas, na correção do classificador do painel e nas verificações
+com testes controlados e navegador.
 
 ## Extras
 

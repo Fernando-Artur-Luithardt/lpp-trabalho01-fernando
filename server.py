@@ -130,3 +130,42 @@ async def abrir_vila(sid, dados=None):
         estado["aberta_em_ms"] = instante_publico(aberta_em)
         estado["fase"] = "aberta"
         await publicar("vila.iniciada", causa)
+
+
+def criar_obra():
+    """Cria identidade e prazos sob o lock; não agenda a conclusão nesta etapa."""
+    inicio = agora()
+    prazo = inicio + TEMPO_OBRA
+    return {
+        "id": next(identidades),
+        "status": "em_andamento",
+        "iniciada_em": inicio,
+        "concluir_em": prazo,
+        "concluida_em": None,
+        "iniciada_em_ms": instante_publico(inicio),
+        "concluir_em_ms": instante_publico(prazo),
+        "concluida_em_ms": None,
+    }
+
+
+@sio.on("construcao.solicitada")
+async def construir(sid, dados=None):
+    causa = "construcao.solicitada"
+    async with lock:
+        if estado["fase"] != "aberta":
+            await recusar(sid, causa, "A temporada não está aberta")
+            return
+        if sessoes.get(sid, {}).get("papel") != "jogador":
+            await recusar(sid, causa, "Só o Jogador pode construir")
+            return
+        if estado["trigo"] < CUSTO_OBRA:
+            await recusar(sid, causa, "Trigo insuficiente")
+            return
+        if snapshot()["trabalhadores"] >= LIMITE_AGRICULTORES:
+            await recusar(sid, causa, "Sem agricultor livre")
+            return
+
+        obra = criar_obra()
+        estado["trigo"] -= CUSTO_OBRA
+        estado["obras"].append(obra)
+        await publicar("construcao.iniciada", causa, obra_id=obra["id"], custo=CUSTO_OBRA)

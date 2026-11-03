@@ -8,6 +8,7 @@ import server
 
 
 PEDIDO_ABERTURA = "vila.abertura_solicitada"
+PEDIDO_CONSTRUCAO = "construcao.solicitada"
 ESTADO_INICIAL = deepcopy(server.estado)
 
 
@@ -49,12 +50,15 @@ class ServidorTests(unittest.IsolatedAsyncioTestCase):
         # Exercita também o registro do nome público no Socket.IO.
         await server.sio.handlers["/"][PEDIDO_ABERTURA](sid, *dados)
 
-    def conferir_recusa(self, sid, motivo, anterior):
+    async def construir(self, sid, *dados):
+        await server.sio.handlers["/"][PEDIDO_CONSTRUCAO](sid, *dados)
+
+    def conferir_recusa(self, sid, motivo, anterior, causa=PEDIDO_ABERTURA):
         self.emit.assert_awaited_once()
         chamada = self.emit.await_args
         self.assertEqual(chamada.args[0], "operacao.recusada")
         self.assertEqual(chamada.kwargs, {"to": sid})
-        self.assertEqual(chamada.args[1]["causa"], PEDIDO_ABERTURA)
+        self.assertEqual(chamada.args[1]["causa"], causa)
         self.assertEqual(chamada.args[1]["motivo"], motivo)
         self.assertEqual(chamada.args[1]["estado"], anterior)
         self.assertEqual(server.snapshot(), anterior)
@@ -190,6 +194,125 @@ class ServidorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.emit.await_args.kwargs, {"to": "B2"})
         self.assertEqual(self.emit.await_args.args[1]["estado"], anterior)
         self.assertEqual(server.aberta_em, 100.0)
+
+    def preparar_obras(self, quantidade, status="em_andamento"):
+        # Estados artificiais pertencem somente aos testes, sem rotas na aplicação.
+        server.estado["obras"] = [{
+            "id": 100 + i, "status": status, "iniciada_em": 90.0,
+            "concluir_em": 98.0, "concluida_em": 98.0 if status == "concluida" else None,
+            "iniciada_em_ms": 990_000, "concluir_em_ms": 998_000,
+            "concluida_em_ms": 998_000 if status == "concluida" else None,
+        } for i in range(quantidade)]
+
+    async def test_construcao_recusas_na_ordem_fase_papel_trigo_agricultor(self):
+        await self.participantes()
+        casos = [
+            ("aguardando", "A", 150, 0, "A temporada não está aberta"),
+            ("encerrada", "A", 150, 0, "A temporada não está aberta"),
+            ("aguardando", "M", 49, 3, "A temporada não está aberta"),
+            ("encerrada", "M", 49, 3, "A temporada não está aberta"),
+            ("aberta", "M", 150, 0, "Só o Jogador pode construir"),
+            ("aberta", "M", 49, 3, "Só o Jogador pode construir"),
+            ("aberta", "A", 49, 0, "Trigo insuficiente"),
+            ("aberta", "A", 49, 3, "Trigo insuficiente"),
+            ("aberta", "B", 50, 3, "Sem agricultor livre"),
+            ("aberta", "B", 100, 3, "Sem agricultor livre"),
+        ]
+        for fase, sid, trigo, ocupados, motivo in casos:
+            with self.subTest(fase=fase, sid=sid, trigo=trigo, ocupados=ocupados):
+                server.estado.update(fase=fase, trigo=trigo)
+                self.preparar_obras(ocupados)
+                anterior = server.snapshot()
+                interno = deepcopy(server.estado)
+                self.emit.reset_mock()
+                await self.construir(sid, {"papel": "jogador", "trigo": 999, "custo": 0})
+                self.conferir_recusa(sid, motivo, anterior, PEDIDO_CONSTRUCAO)
+                self.assertEqual(server.estado, interno)
+        self.assertEqual(next(server.identidades), 1, "Recusas não consomem identidade")
+
+    async def test_construcao_com_50_debita_uma_vez_e_publica_contrato(self):
+        await self.participantes()
+        await self.abrir("M")
+        server.estado["trigo"] = 50
+        self.relogio.return_value = 110.0  # O prazo nasce da obra, não da abertura.
+        self.emit.reset_mock()
+        await self.construir("A", {"papel": "mestre", "custo": 0, "tempo_obra": 1, "obra_id": 99})
+        obra = {
+            "id": 1, "status": "em_andamento", "iniciada_em_ms": 1_010_000,
+            "concluir_em_ms": 1_018_000, "concluida_em_ms": None,
+        }
+        self.assertEqual(server.snapshot()["obras"], [obra])
+        self.assertEqual(server.estado["obras"], [{**obra, "iniciada_em": 110.0,
+                                                "concluir_em": 118.0, "concluida_em": None}])
+        self.assertEqual(server.estado["trigo"], 0)
+        self.assertEqual(server.snapshot()["trabalhadores"], 1)
+        self.assertEqual(server.snapshot()["em_obra"], 1)
+        self.assertEqual(server.snapshot()["concluidas"], 0)
+        self.assertEqual(server.snapshot()["producao"], 10)
+        self.assertEqual(server.estado["farinha"], 0)
+        self.emit.assert_awaited_once_with("construcao.iniciada", {
+            "estado": server.snapshot(), "causa": PEDIDO_CONSTRUCAO,
+            "servidor_em_ms": 1_010_000, "obra_id": 1, "custo": 50,
+        }, to=None)
+        self.assertEqual(server.tarefas, set())
+        server.esperar.assert_not_awaited()
+
+    async def test_obras_tem_ids_distintos_snapshots_copiados_e_limite_tres(self):
+        await self.participantes()
+        await self.abrir("M")
+        server.estado["trigo"] = 200
+        self.emit.reset_mock()
+        for sid in ("A", "B", "A"):
+            await self.construir(sid)
+        eventos = [c.args[1] for c in self.emit.await_args_list]
+        self.assertEqual([e["obra_id"] for e in eventos], [1, 2, 3])
+        self.assertEqual([e["estado"]["trigo"] for e in eventos], [150, 100, 50])
+        self.assertEqual([len(e["estado"]["obras"]) for e in eventos], [1, 2, 3])
+        self.assertEqual([e["estado"]["trabalhadores"] for e in eventos], [1, 2, 3])
+        self.emit.reset_mock()
+        anterior = server.snapshot()
+        await self.construir("B")
+        self.conferir_recusa("B", "Sem agricultor livre", anterior, PEDIDO_CONSTRUCAO)
+
+    async def test_entrada_tardia_preserva_obras_prazos_e_estado_apos_oito_segundos(self):
+        await self.participantes()
+        await self.abrir("M")
+        await self.construir("A")
+        anterior = server.snapshot()
+        await server.disconnect("B")
+        self.relogio.return_value = 120.0
+        self.emit.reset_mock()
+        await server.connect("B2", {}, {"papel": "jogador"})
+        self.emit.assert_awaited_once_with("estado.sincronizado", {
+            "estado": anterior, "causa": "conexao", "servidor_em_ms": 1_020_000,
+        }, to="B2")
+        self.assertEqual(server.estado["trigo"], 100)
+        self.assertEqual(server.snapshot()["trabalhadores"], 1)
+        self.assertEqual(server.snapshot()["concluidas"], 0)
+
+    async def test_moinhos_concluidos_nao_limitam_novas_obras(self):
+        await self.participantes()
+        await self.abrir("M")
+        self.preparar_obras(20, "concluida")
+        await self.construir("A")
+        self.assertEqual(server.snapshot()["concluidas"], 20)
+        self.assertEqual(server.snapshot()["trabalhadores"], 1)
+        self.assertEqual(server.snapshot()["em_obra"], 1)
+        self.assertEqual(server.estado["trigo"], 100)
+
+    async def test_construcao_espera_lock_e_reavalia_estoque(self):
+        await self.participantes()
+        await self.abrir("M")
+        self.emit.reset_mock()
+        async with server.lock:
+            tarefa = asyncio.create_task(self.construir("A"))
+            await asyncio.sleep(0)
+            self.emit.assert_not_awaited()
+            self.assertEqual(server.estado["obras"], [])
+            server.estado["trigo"] = 49
+            anterior = server.snapshot()
+        await tarefa
+        self.conferir_recusa("A", "Trigo insuficiente", anterior, PEDIDO_CONSTRUCAO)
 
 
 if __name__ == "__main__":
