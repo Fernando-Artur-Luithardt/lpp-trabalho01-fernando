@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Vila em Tempo Real</title>
+  <title>Fazenda em Tempo Real — Tema 19</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 580px; margin: 24px auto; padding: 0 12px; }
     .cartao, .painel { border: 1px solid #ccc; border-radius: 8px; padding: 12px; margin: 12px 0; }
@@ -42,34 +42,39 @@
 <div id="app">
 
   <!-- Tela de entrada -->
-  <section v-if="!conectado" class="cartao">
-    <h1>🏘️ Vila em Tempo Real</h1>
+  <section v-show="!entrou" class="cartao">
+    <h1>🌾 Fazenda em Tempo Real — Tema 19</h1>
     <input v-model="nome" placeholder="Seu nome">
-    <button @click="entrar('mestre')">Entrar como Mestre</button>
-    <button @click="entrar('jogador')">Entrar como Jogador</button>
+    <button :disabled="conectando" @click="entrar('mestre')">Entrar como Mestre</button>
+    <button :disabled="conectando" @click="entrar('jogador')">Entrar como Jogador</button>
+    <p v-if="erroConexao" role="alert">{{ erroConexao }}</p>
   </section>
 
   <!-- Tela da vila -->
-  <main v-else>
-    <h1>🏘️ Vila</h1>
+  <main v-show="entrou">
+    <h1>🌾 Fazenda — Tema 19</h1>
     <p>{{ papel }}: <strong>{{ nome || "Anônimo" }}</strong> · Temporada: <strong>{{ estado.fase }}</strong></p>
+    <p v-if="!conectado" role="status">Conexão interrompida. Reconectando…</p>
 
     <!-- A vila desenhada pelo Phaser aparece aqui -->
     <div id="jogo"></div>
 
     <section class="painel">
-      <p>🪵 Toras: <strong>{{ estado.toras }}</strong> (+{{ porMinuto }}/min)</p>
-      <p>👷 Trabalhadores: {{ estado.trabalhadores }}/{{ estado.limite }}
+      <p>🌾 Trigo: <strong>{{ estado.trigo }}</strong> (produção bruta: {{ porMinuto }}/min quando aberta)</p>
+      <p>🌾 Farinha: <strong>{{ estado.farinha }}</strong></p>
+      <p>👷 Agricultores: {{ estado.trabalhadores }}/{{ estado.limite }}
         <progress :value="estado.trabalhadores" :max="estado.limite"></progress></p>
-      <p>🏠 Construções: {{ estado.concluidas }} concluídas, {{ estado.em_obra }} em obra</p>
+      <p>🏠 Moinhos: {{ estado.concluidas }} concluídos, {{ estado.em_obra }} em obra</p>
+      <p>Colheita: {{ estado.colheita ? estado.colheita.valor + ' de trigo disponíveis' : 'nenhuma disponível' }}</p>
     </section>
 
     <section>
       <template v-if="papel === 'mestre'">
-        <button @click="abrirVila">Abrir temporada</button>
-        <button @click="encerrarVila">Encerrar temporada</button>
+        <button disabled @click="abrirVila">Abrir temporada</button>
+        <button disabled @click="encerrarVila">Encerrar temporada</button>
       </template>
-      <button v-else @click="construir">🔨 Construir (custo {{ estado.custo }} toras)</button>
+      <button v-else disabled @click="construir">🔨 Construir (custo {{ estado.custo }} trigo)</button>
+      <p>Etapa 1: entrada e sincronização. Ações da temporada nas próximas etapas.</p>
     </section>
 
     <ul class="avisos">
@@ -107,7 +112,7 @@
 
 <script>
   // =====================================================================
-  //  A VILA DESENHADA (Phaser) - já vem pronta, você NÃO precisa alterar.
+  //  A VILA DESENHADA (Phaser) - mapa e métodos reaproveitados do kit.
   //  O cenário é um MAPA (Tilemap) feito no Tiled: client/assets/vila.json.
   //  Cada método abaixo reage a UM evento do servidor.
   //  Seu trabalho é chamar o método certo dentro de cada socket.on(...).
@@ -135,7 +140,7 @@
         mapa.createLayer("chao", tileset);
         mapa.createLayer("decoracao", tileset);
 
-        // 2) pontos marcados no mapa: onde ficam as obras e o acampamento de lenha
+        // 2) pontos marcados no mapa: obras e ponto de recursos do kit
         const pontos = mapa.getObjectLayer("pontos").objects;
         this.lotes = pontos.filter((p) => p.name.startsWith("lote"))
           .sort((a, b) => a.name.localeCompare(b.name, "pt", { numeric: true }));
@@ -147,6 +152,7 @@
         this.alt = mapa.heightInPixels;
 
         this.obras = [];      // obras em andamento (a primeira a começar é a primeira a terminar)
+        this.registros = new Map(); // desenhos do snapshot, indexados pela identidade da obra
         this.usados = 0;      // quantos lotes já foram usados
         this.faixa = this.add.text(this.larg / 2, 9, "⏳ Aguardando o Mestre", {
           fontSize: "8px", color: "#ffffff", backgroundColor: "#00000099",
@@ -182,20 +188,34 @@
 
       // ----- um método para cada evento do servidor -----
       mostrarEstado(estado) {                 // estado.sincronizado
-        for (let i = 0; i < estado.concluidas; i++) {
-          const p = this.lote(this.usados++);
-          this.criarCasa(p.x, p.y);
+        const ids = new Set(estado.obras.map((obra) => obra.id));
+        for (const [id, desenho] of this.registros) {
+          if (!ids.has(id)) {
+            desenho.destroy();
+            this.registros.delete(id);
+          }
         }
-        for (let i = 0; i < estado.em_obra; i++) this.criarObra(estado.tempo_obra * 1000);
-        if (estado.fase === "aberta") this.vilaIniciada();
-        if (estado.fase === "encerrada") this.vilaEncerrada();
+        // Reconciliar não reproduz animações de débito/crédito ou de conclusão.
+        [...estado.obras].sort((a, b) => a.id - b.id).forEach((obra, i) => {
+          const { x, y } = this.lote(i); // os lotes não limitam a quantidade de moinhos
+          let desenho = this.registros.get(obra.id);
+          const quadro = obra.status === "concluida" ? 0 : 1;
+          if (!desenho) {
+            desenho = this.add.sprite(x, y, "sprites", quadro);
+            this.registros.set(obra.id, desenho);
+          }
+          desenho.setPosition(x, y).setFrame(quadro);
+        });
+        this.usados = estado.obras.length;
+        this.faixa.setText(estado.fase === "aguardando" ? "⏳ Aguardando o Mestre"
+          : estado.fase === "aberta" ? "☀️ Temporada aberta" : "🌙 Temporada encerrada");
       }
       vilaIniciada() {                        // vila.iniciada
         this.faixa.setText("☀️ Temporada aberta");
       }
       obraIniciada(estado) {                  // construcao.iniciada
         this.criarObra(estado.tempo_obra * 1000);
-        this.flutuar("-" + estado.custo + " 🪵", this.acampamento.x, this.acampamento.y, "#b00020");
+        this.flutuar("-" + estado.custo + " 🌾", this.acampamento.x, this.acampamento.y, "#b00020");
       }
       obraConcluida(estado) {                 // construcao.concluida
         const obra = this.obras.shift();
@@ -205,7 +225,7 @@
         this.flutuar("🏠 Obra concluída!", obra.x, obra.y - 18, "#1b5e20");
       }
       recursoProduzido(estado) {              // recurso.produzido
-        this.flutuar("+" + estado.producao + " 🪵", this.acampamento.x, this.acampamento.y, "#1b5e20");
+        this.flutuar("+" + estado.producao + " 🌾", this.acampamento.x, this.acampamento.y, "#1b5e20");
       }
       recusado(motivo) {                      // operacao.recusada (só quem pediu)
         this.cameras.main.shake(180, 0.006);
@@ -247,9 +267,13 @@
       const nome = ref("");
       const papel = ref("");
       const conectado = ref(false);
+      const entrou = ref(false); // mantém o contêiner Phaser montado na reconexão
+      const conectando = ref(false);
+      const erroConexao = ref("");
       const estado = reactive({
-        fase: "aguardando", toras: 0, trabalhadores: 0, limite: 0,
+        tema: null, fase: "aguardando", trigo: 0, farinha: 0, trabalhadores: 0, limite: 0,
         producao: 0, intervalo: 0, tempo_obra: 0, custo: 0, concluidas: 0, em_obra: 0,
+        obras: [], colheita: null, aberta_em_ms: null, encerrada_em_ms: null,
       });
       const avisos = ref([]);
       const eventos = ref([]);              // linha do tempo do painel de eventos
@@ -258,7 +282,7 @@
       const eventosVisiveis = computed(() =>
         eventos.value.filter((e) => !(ocultarProducao.value && e.nome === "recurso.produzido")));
       const jogo = criarJogo();      // a vila desenhada (Phaser)
-      let socket = null;
+      const socket = io({ autoConnect: false });
 
       const porMinuto = computed(() =>
         estado.intervalo ? Math.round(estado.producao * 60 / estado.intervalo) : 0);
@@ -276,8 +300,11 @@
       function resumir(d) {                // transforma os dados do evento em texto curto
         if (!d) return "";
         const { estado: e, causa, ...resto } = d;
-        const partes = Object.entries(resto).map(([k, v]) => k + ": " + v);
-        if (e) partes.push("toras " + e.toras + ", trabalhadores " + e.trabalhadores + "/" + e.limite);
+        const partes = Object.entries(resto).map(([k, v]) => k + ": " + JSON.stringify(v));
+        if (e) partes.push("fase " + e.fase, "trigo " + e.trigo, "farinha " + e.farinha,
+          "agricultores " + e.trabalhadores + "/" + e.limite,
+          "moinhos " + e.concluidas + ", em obra " + e.em_obra,
+          "obras " + JSON.stringify(e.obras), "colheita " + JSON.stringify(e.colheita));
         return partes.join(" · ");
       }
       function registrar(sentido, nome, dados, reacao = "") {
@@ -294,28 +321,43 @@
       }
       // PEDIR (emit): registra o evento no painel e o envia ao servidor
       function pedir(nome, dados) {
-        registrar("enviado", nome, dados);
+        registrar("enviado", nome, { ...dados, causa: "acao local: " + nome }, "aguardar resposta do servidor");
         if (dados === undefined) socket.emit(nome); else socket.emit(nome, dados);
       }
 
       function entrar(p) {
+        if (conectando.value || conectado.value) return;
+        nome.value = nome.value.trim() || "Anônimo";
         papel.value = p;
-        socket = io({ auth: { nome: nome.value || "Anônimo", papel: p } });
-        socket.on("connect", () => {
-          conectado.value = true;
-          nextTick(() => jogo.iniciar("jogo"));   // a vila desenhada começa quando a tela aparece
-        });
-
-        // ===== ESCUTAS (on): o cliente reage aos FATOS do servidor =====
-        // ouvir(evento, "o que o cliente faz ao receber", função)
-        // ETAPA 1: ouvir "estado.sincronizado"   -> jogo.mostrarEstado(...)
-        // ETAPA 2: ouvir "vila.iniciada"         -> jogo.vilaIniciada()
-        // ETAPA 3: ouvir "construcao.iniciada"   -> jogo.obraIniciada(...)
-        // ETAPA 4: ouvir "operacao.recusada"     -> jogo.recusado(...)
-        // ETAPA 5: ouvir "recurso.produzido"     -> jogo.recursoProduzido(...)
-        //          e "construcao.concluida"      -> jogo.obraConcluida(...)
-        // ETAPA 6: ouvir "vila.encerrada"        -> jogo.vilaEncerrada()
+        conectando.value = true;
+        erroConexao.value = "";
+        socket.auth = { nome: nome.value, papel: p };
+        socket.connect();
       }
+
+      // Escutas registradas uma única vez, ANTES da primeira conexão.
+      ouvir("estado.sincronizado", "atualizar estoques e reconciliar a cena sem repetir efeitos", (d) => {
+        atualizar(d);
+        jogo.mostrarEstado(d.estado); // chamar() guarda o snapshot se a cena ainda não existir
+      });
+      socket.on("connect", () => {
+        conectado.value = true;
+        conectando.value = false;
+        if (entrou.value) avisar("Conexão restabelecida; estado sincronizado.", "ok");
+        entrou.value = true;
+        erroConexao.value = "";
+        nextTick(() => jogo.iniciar("jogo"));
+      });
+      socket.on("disconnect", () => {
+        conectado.value = false;
+        avisar("Conexão interrompida; aguardando sincronização.");
+      });
+      socket.on("connect_error", (erro) => {
+        conectado.value = false;
+        conectando.value = false;
+        erroConexao.value = "Não foi possível entrar: " + erro.message;
+        avisar(erroConexao.value, "erro");
+      });
 
       // ===== PEDIDOS (emit): o cliente PEDE algo ao servidor =====
       // pedir(evento)
@@ -329,7 +371,7 @@
         // ETAPA 6: pedir "vila.encerramento_solicitado"
       }
 
-      return { nome, papel, conectado, estado, avisos, eventosVisiveis, contadores, ocultarProducao, porMinuto,
+      return { nome, papel, conectado, entrou, conectando, erroConexao, estado, avisos, eventosVisiveis, contadores, ocultarProducao, porMinuto,
                entrar, abrirVila, construir, encerrarVila };
     }
   }).mount("#app");
