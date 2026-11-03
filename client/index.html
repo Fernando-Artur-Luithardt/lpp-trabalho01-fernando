@@ -75,7 +75,7 @@
         <button disabled @click="encerrarVila">Encerrar temporada</button>
       </template>
       <button v-else :disabled="!conectado" @click="construir">🔨 Construir (custo {{ estado.custo }} trigo)</button>
-      <p>As barras indicam o prazo das obras. Conclusão automática, produção, coleta e encerramento ainda indisponíveis.</p>
+      <p>As barras indicam o prazo das obras. Produção e conclusão são automáticas. Coleta, moagem e encerramento ainda indisponíveis.</p>
     </section>
 
     <ul class="avisos">
@@ -247,12 +247,10 @@
         this.mostrarEstado(d.estado, referencia);
         if (nova) this.flutuar("-" + d.custo + " 🌾", this.acampamento.x, this.acampamento.y, "#b00020");
       }
-      obraConcluida(estado) {                 // construcao.concluida
-        const obra = this.obras.shift();
-        if (!obra) return;
-        obra.canteiro.destroy(); obra.fundo.destroy(); obra.barra.destroy();
-        this.criarCasa(obra.x, obra.y);
-        this.flutuar("🏠 Obra concluída!", obra.x, obra.y - 18, "#1b5e20");
+      obraConcluida(d, referencia) {
+        this.mostrarEstado(d.estado, referencia);
+        const desenho = this.registros.get(d.obra_id);
+        if (desenho) this.flutuar("🏠 Obra concluída!", desenho.x, desenho.y - 18, "#1b5e20");
       }
       recursoProduzido(estado) {              // recurso.produzido
         this.flutuar("+" + estado.producao + " 🌾", this.acampamento.x, this.acampamento.y, "#1b5e20");
@@ -280,7 +278,8 @@
       vilaIniciada: (...a) => chamar("vilaIniciada", ...a),
       obraIniciada: (d) => chamar("obraIniciada", d,
         { servidorEmMs: d.servidor_em_ms, recebidoEm: performance.now() }),
-      obraConcluida: (...a) => chamar("obraConcluida", ...a),
+      obraConcluida: (d) => chamar("obraConcluida", d,
+        { servidorEmMs: d.servidor_em_ms, recebidoEm: performance.now() }),
       recursoProduzido: (...a) => chamar("recursoProduzido", ...a),
       recusado: (...a) => chamar("recusado", ...a),
       vilaEncerrada: (...a) => chamar("vilaEncerrada", ...a),
@@ -380,6 +379,14 @@
       ouvir("construcao.iniciada", "atualizar trigo e agricultores; desenhar a obra pelo identificador e prazo", (d) => {
         atualizar(d);
         jogo.obraIniciada(d);
+      });
+      ouvir("recurso.produzido", "atualizar o estoque e mostrar o trigo produzido", (d) => {
+        atualizar(d);
+        jogo.recursoProduzido(d.estado);
+      });
+      ouvir("construcao.concluida", "liberar agricultor e reconciliar o moinho pela identidade", (d) => {
+        atualizar(d);
+        jogo.obraConcluida(d);
       });
       ouvir("operacao.recusada", "mostrar o motivo; pedido sem alteração do estado", (d) => {
         atualizar(d);

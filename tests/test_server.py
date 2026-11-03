@@ -36,6 +36,9 @@ class ServidorTests(unittest.IsolatedAsyncioTestCase):
         self.emit = p.start()
         self.addCleanup(p.stop)
         self.emit.side_effect = self.transmitir
+        p = patch.object(server, "agendar", create=True)
+        self.agendar = p.start()
+        self.addCleanup(p.stop)
 
     async def transmitir(self, evento, dados, *, to):
         self.assertTrue(server.lock.locked(), "Publicar dentro da operação protegida")
@@ -134,12 +137,14 @@ class ServidorTests(unittest.IsolatedAsyncioTestCase):
     async def test_segunda_abertura_preserva_estado_e_instantes(self):
         await self.participantes()
         await self.abrir("M")
+        self.agendar.assert_called_once_with(server.ciclo_producao, 100.0)
         primeiro_evento = self.emit.await_args.args[1]
         anterior = server.snapshot()
         self.emit.reset_mock()
         self.relogio.return_value = 120.0
         await self.abrir("M")
         self.conferir_recusa("M", "A temporada já foi aberta", anterior)
+        self.agendar.assert_called_once_with(server.ciclo_producao, 100.0)
         self.assertEqual(server.aberta_em, 100.0)
         self.assertEqual(server.estado["aberta_em_ms"], 1_000_000)
         self.assertEqual(primeiro_evento["estado"], anterior)
@@ -314,6 +319,47 @@ class ServidorTests(unittest.IsolatedAsyncioTestCase):
         await tarefa
         self.conferir_recusa("A", "Trigo insuficiente", anterior, PEDIDO_CONSTRUCAO)
 
+
+class TemporizadoresTests(unittest.IsolatedAsyncioTestCase):
+    async def test_calendario_ancorado_e_fase(self):
+        prazos = []
+        async def produzir(prazo):
+            prazos.append(prazo)
+            return len(prazos) < 3
+        with patch.object(server, 'produzir_em', side_effect=produzir):
+            await server.ciclo_producao(100)
+        self.assertEqual(prazos, [105, 110, 115])
+        with patch.object(server, 'estado', deepcopy(ESTADO_INICIAL)), patch.object(server, 'lock', asyncio.Lock()), patch.object(server, 'agora', return_value=105), patch.object(server.sio, 'emit', new_callable=AsyncMock) as emit:
+            self.assertFalse(await server.produzir_em(105))
+            self.assertEqual(server.estado['trigo'],150)
+            emit.assert_not_awaited()
+
+    async def test_sequencia_controlada(self):
+        tempo = [100.0]
+        async def esperar(segundos):
+            self.assertFalse(server.lock.locked())
+            tempo[0] += segundos
+        with patch.object(server, 'estado', deepcopy(ESTADO_INICIAL)), patch.object(server, 'lock', asyncio.Lock()), patch.object(server, 'agora', side_effect=lambda: tempo[0]), patch.object(server, 'esperar', side_effect=esperar), patch.object(server.sio, 'emit', new_callable=AsyncMock) as emit:
+            server.estado['fase'] = 'aberta'
+            obra = server.criar_obra()
+            server.estado['obras'].append(obra)
+            server.estado['trigo'] = 100
+            await server.produzir_em(105)
+            self.assertEqual(server.estado['trigo'], 110)
+            await server.concluir_obra(obra['id'])
+            self.assertEqual(tempo[0], 108)
+            self.assertEqual(server.snapshot()['trabalhadores'], 0)
+            await server.produzir_em(110)
+            self.assertEqual(server.estado['trigo'], 130)
+            self.assertEqual(server.estado['farinha'], 0)
+            self.assertEqual([c.args[0] for c in emit.await_args_list], ['recurso.produzido','construcao.concluida','recurso.produzido'])
+            self.assertEqual(emit.await_args_list[0].args[1]['estado']['trigo'],110)
+            self.assertTrue(all(c.kwargs == {'to':None} for c in emit.await_args_list))
+            await server.concluir_obra(obra['id'])
+            self.assertEqual(emit.await_count,3)
+            server.estado['fase']='encerrada'
+            await server.produzir_em(115)
+            self.assertEqual(emit.await_count,3)
 
 if __name__ == "__main__":
     unittest.main()

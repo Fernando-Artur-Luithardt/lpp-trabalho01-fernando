@@ -1,10 +1,9 @@
 # Vila em Tempo Real — Fazenda (tema 19)
 
-Etapas 1–3 implementadas: conexão, sincronização privada, abertura única pelo
-Mestre e construções solicitadas pelos jogadores. O servidor mantém uma fazenda
-compartilhada em memória. Cada obra aceita custa 50 de trigo e ocupa um dos três
-agricultores. Conclusão automática, produção, moagem, coleta e encerramento
-pertencem às próximas etapas.
+Etapas 1–4 implementadas: conexão, abertura, construções, produção a cada cinco
+segundos e conclusão das obras após oito segundos. O servidor mantém a fazenda
+em memória e decide todas as alterações. Moagem, coleta e encerramento serão
+acrescentados nas próximas etapas.
 
 ## Integrantes
 
@@ -262,6 +261,46 @@ e o roteiro acima permitem repetir a verificação. **Verificação manual pende
 repetição humana de V3 em três abas visíveis. O ensaio M/A/B foi automatizado e a
 captura de B foi inspecionada; não foi uma execução manual humana. A repetição
 humana de V2 anteriormente registrada também continua pendente.
+
+## Etapa 4 — Produção e conclusão por temporizadores
+
+Verificação de 2026-11-03 sobre `ea6c846`. **19 testes aprovados** com
+`python -m unittest discover -s tests -p 'test_*.py' -v`. Os testes de regras
+anteriores isolam o agendamento; os testes temporizados substituem relógio e
+espera. Foram conferidos calendário ancorado em abertura + 5/10/15 s,
+nenhum crédito imediato ou em aguardando, um único agendamento após abertura
+repetida, esperas fora do lock, snapshots copiados e conclusão única por identidade.
+A sequência controlada foi trigo 100 → 110 em 5 s → liberação do agricultor em
+8 s → 130 em 10 s, produção 20 e farinha zero.
+
+V4 também foi executado com um processo Uvicorn e três páginas reais do Chrome
+headless: M abriu, A construiu e B entrou cerca de dois segundos depois. B recebeu
+uma obra com barra em aproximadamente 27%, preservando início e prazo. Nas três
+páginas ocorreram dois `recurso.produzido` e um `construcao.concluida`; o resultado
+foi trigo 130, farinha 0, ocupação 0/3, produção 20 e um único moinho, sem barras
+restantes ou exceções JavaScript. A obra iniciou em `1793742217768`, tinha prazo
+`1793742225768` e concluiu em `1793742225769` ms: 8,001 s desde seu próprio início.
+A precisão exata dos intervalos é conferida pelo relógio controlado, não pelos cliques.
+Instrumento temporário: `node /tmp/fazenda-etapa4-browser.mjs`.
+
+Para reproduzir V4:
+
+1. Reinicie o servidor; entre como Mestre e Jogador A em duas abas. Abra a temporada
+   e construa imediatamente com A, antes dos primeiros dois segundos.
+2. Observe 100 de trigo após construir e 110 no primeiro ciclo, cinco segundos
+   após a abertura. Entre como Jogador B numa terceira aba durante a obra.
+3. B deve receber a mesma identidade e prazo, com progresso já iniciado. Oito
+   segundos após o início da obra, as três abas mostram um moinho e agricultor livre.
+4. No ciclo de dez segundos desde a abertura, confira trigo 130 e farinha zero.
+   No painel, produção tem causa `temporizador`, e conclusão tem causa
+   `construcao.iniciada`, `obra_id` e `gatilho: temporizador`.
+5. Recarregar uma aba deve sincronizar o moinho existente sem repetir custo.
+
+**Pendente:** repetição manual humana de V4. O roteiro acima foi automatizado;
+a conferência com cliques humanos não foi executada. Os registros das Etapas
+1–3 descrevem versões históricas; a ausência de conclusão/produção da Etapa 3
+foi substituída pelo comportamento desta etapa. Moagem continua fora do escopo.
+Codex auxiliou na implementação dos temporizadores, testes e verificação M/A/B.
 
 ## Perguntas
 

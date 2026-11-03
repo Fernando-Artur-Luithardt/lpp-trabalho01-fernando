@@ -130,6 +130,7 @@ async def abrir_vila(sid, dados=None):
         estado["aberta_em_ms"] = instante_publico(aberta_em)
         estado["fase"] = "aberta"
         await publicar("vila.iniciada", causa)
+        agendar(ciclo_producao, aberta_em)
 
 
 def criar_obra():
@@ -169,3 +170,48 @@ async def construir(sid, dados=None):
         estado["trigo"] -= CUSTO_OBRA
         estado["obras"].append(obra)
         await publicar("construcao.iniciada", causa, obra_id=obra["id"], custo=CUSTO_OBRA)
+        agendar(concluir_obra, obra["id"])
+
+
+def agendar(funcao, *args):
+    tarefa = asyncio.create_task(funcao(*args))
+    tarefas.add(tarefa)
+    tarefa.add_done_callback(tarefas.discard)
+    return tarefa
+
+
+async def esperar_ate(prazo):
+    while agora() < prazo:
+        await esperar(prazo - agora())
+
+
+async def produzir_em(prazo):
+    await esperar_ate(prazo)
+    async with lock:
+        if estado["fase"] != "aberta":
+            return False
+        quantidade = snapshot()["producao"]
+        estado["trigo"] += quantidade
+        await publicar("recurso.produzido", "temporizador", quantidade=quantidade)
+        return True
+
+
+async def ciclo_producao(inicio):
+    ciclo = 1
+    while await produzir_em(inicio + ciclo * INTERVALO_PRODUCAO):
+        ciclo += 1
+
+
+async def concluir_obra(obra_id):
+    obra = next((o for o in estado["obras"] if o["id"] == obra_id), None)
+    if obra is None:
+        return
+    await esperar_ate(obra["concluir_em"])
+    async with lock:
+        if estado["fase"] != "aberta" or obra["status"] != "em_andamento":
+            return
+        obra["status"] = "concluida"
+        obra["concluida_em"] = agora()
+        obra["concluida_em_ms"] = instante_publico(obra["concluida_em"])
+        await publicar("construcao.concluida", "construcao.iniciada",
+                       obra_id=obra_id, gatilho="temporizador")
