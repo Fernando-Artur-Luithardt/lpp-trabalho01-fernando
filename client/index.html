@@ -70,11 +70,11 @@
 
     <section>
       <template v-if="papel === 'mestre'">
-        <button disabled @click="abrirVila">Abrir temporada</button>
+        <button :disabled="!conectado" @click="abrirVila">Abrir temporada</button>
         <button disabled @click="encerrarVila">Encerrar temporada</button>
       </template>
       <button v-else disabled @click="construir">🔨 Construir (custo {{ estado.custo }} trigo)</button>
-      <p>Etapa 1: entrada e sincronização. Ações da temporada nas próximas etapas.</p>
+      <p>O Mestre já pode abrir a temporada. Construção, produção, coleta e encerramento ainda indisponíveis.</p>
     </section>
 
     <ul class="avisos">
@@ -304,7 +304,8 @@
         if (e) partes.push("fase " + e.fase, "trigo " + e.trigo, "farinha " + e.farinha,
           "agricultores " + e.trabalhadores + "/" + e.limite,
           "moinhos " + e.concluidas + ", em obra " + e.em_obra,
-          "obras " + JSON.stringify(e.obras), "colheita " + JSON.stringify(e.colheita));
+          "obras " + JSON.stringify(e.obras), "colheita " + JSON.stringify(e.colheita),
+          "aberta_em_ms " + e.aberta_em_ms);
         return partes.join(" · ");
       }
       function registrar(sentido, nome, dados, reacao = "") {
@@ -340,6 +341,15 @@
         atualizar(d);
         jogo.mostrarEstado(d.estado); // chamar() guarda o snapshot se a cena ainda não existir
       });
+      ouvir("vila.iniciada", "atualizar a fase e mostrar a temporada aberta", (d) => {
+        atualizar(d);
+        jogo.vilaIniciada();
+      });
+      ouvir("operacao.recusada", "mostrar o motivo; pedido sem alteração do estado", (d) => {
+        atualizar(d);
+        avisar(d.motivo + ". Nenhuma alteração causada pelo pedido.", "erro");
+        jogo.recusado(d.motivo);
+      });
       socket.on("connect", () => {
         conectado.value = true;
         conectando.value = false;
@@ -362,7 +372,7 @@
       // ===== PEDIDOS (emit): o cliente PEDE algo ao servidor =====
       // pedir(evento)
       function abrirVila() {
-        // ETAPA 2: pedir "vila.abertura_solicitada"
+        pedir("vila.abertura_solicitada");
       }
       function construir() {
         // ETAPA 3: pedir "construcao.solicitada"

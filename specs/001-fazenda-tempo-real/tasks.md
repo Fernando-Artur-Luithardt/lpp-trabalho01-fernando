@@ -6,7 +6,7 @@ description: "Tarefas da Fazenda, tema 19, nas sete etapas do plano"
 
 **Input**: documentos de `specs/001-fazenda-tempo-real/`.
 **Prerequisites**: [plan.md](plan.md), [spec.md](spec.md), [research.md](research.md), [data-model.md](data-model.md), [contracts/events.md](contracts/events.md) e [quickstart.md](quickstart.md); regras de domínio em `docs/especificacao.md` e governança em `.specify/memory/constitution.md`.
-**Estado**: Etapa 1 implementada e verificada em 2026-11-03; Etapas 2–7 pendentes.
+**Estado**: Etapas 1–2 implementadas e verificadas por testes e navegador automatizado em 2026-11-03; repetição manual humana de V2 pendente conforme README. Etapas 3–7 pendentes.
 **Tests**: verificações de aceitação da spec e testes focados já previstos no plano, usando `unittest`, relógio controlado e três abas. Não adicionar framework de testes.
 **Organization**: as sete etapas solicitadas pelo usuário determinam a ordem. Setup e fundamentos integram a etapa 1; acabamento e aceitação final integram a etapa 7. Os rótulos de história mantêm a rastreabilidade sem criar fases ou commits extras.
 
@@ -65,11 +65,11 @@ Todos os caminhos nas tarefas são relativos à raiz do repositório. Reutilizar
 **Eventos**: `vila.abertura_solicitada` → `vila.iniciada` ou `operacao.recusada`.
 **Independent Test**: V2; M abre, todos veem aberta sem crédito imediato; segunda abertura é recusada somente a M, sem reiniciar referência temporal.
 
-- [ ] T010 [P] [US1] Criar `tests/test_server.py` com `IsolatedAsyncioTestCase`, transporte/relógio controlados e estado isolado por caso; cobrir snapshot privado/copiado, sessão e papel inválido, `vila.iniciada` global com causa correta, abertura por Jogador recusada antes da fase, abertura repetida e ausência de alteração/duplicação da referência temporal; preparar testes antes dos novos tratadores, sem esperas reais longas (dep.: T009).
-- [ ] T011 [US1] Implementar `vila.abertura_solicitada` em `server.py` sob o lock, usando papel da sessão: primeiro “Só o Mestre pode abrir a temporada”, depois “A temporada já foi aberta”; na aceitação, registrar abertura monotônica e `aberta_em_ms`, mudar fase e publicar `vila.iniciada` para todos; centralizar `operacao.recusada` com `motivo`, causa do pedido e estado inalterado somente para `sid` (dep.: T010).
-- [ ] T012 [P] [US1] Ligar `abrirVila()` a `pedir('vila.abertura_solicitada')` em `client/index.html`; registrar via `ouvir` as reações `atualizar`/`jogo.vilaIniciada` e `avisar`/`jogo.recusado` para fatos/recusas; não confirmar abertura no clique nem registrar escutas novamente em cada reconexão (dep.: T009).
-- [ ] T013 [US1] Executar os testes pertinentes de `tests/test_server.py` e V2 de `specs/001-fazenda-tempo-real/quickstart.md` nas três abas, registrando em `README.md` abertura única, nenhuma produção imediata, recusa privada e validação direta de pedido de Jogador sem depender da existência de botão (dep.: T011, T012).
-- [ ] T014 [US1] Criar o commit da etapa 2, `feat: controla abertura da temporada`, com `server.py`, `client/index.html`, `tests/test_server.py` e `README.md` verificados (dep.: T013).
+- [X] T010 [P] [US1] Criar `tests/test_server.py` com `IsolatedAsyncioTestCase`, transporte/relógio controlados e estado isolado por caso; cobrir snapshot privado/copiado, sessão e papel inválido, `vila.iniciada` global com causa correta, abertura por Jogador recusada antes da fase, abertura repetida e ausência de alteração/duplicação da referência temporal; preparar testes antes dos novos tratadores, sem esperas reais longas (dep.: T009).
+- [X] T011 [US1] Implementar `vila.abertura_solicitada` em `server.py` sob o lock, usando papel da sessão: primeiro “Só o Mestre pode abrir a temporada”, depois “A temporada já foi aberta”; na aceitação, registrar abertura monotônica e `aberta_em_ms`, mudar fase e publicar `vila.iniciada` para todos; centralizar `operacao.recusada` com `motivo`, causa do pedido e estado inalterado somente para `sid` (dep.: T010).
+- [X] T012 [P] [US1] Ligar `abrirVila()` a `pedir('vila.abertura_solicitada')` em `client/index.html`; registrar via `ouvir` as reações `atualizar`/`jogo.vilaIniciada` e `avisar`/`jogo.recusado` para fatos/recusas; não confirmar abertura no clique nem registrar escutas novamente em cada reconexão (dep.: T009).
+- [X] T013 [US1] Executar os testes pertinentes de `tests/test_server.py` e V2 de `specs/001-fazenda-tempo-real/quickstart.md` nas três abas, registrando em `README.md` abertura única, nenhuma produção imediata, recusa privada e validação direta de pedido de Jogador sem depender da existência de botão (dep.: T011, T012).
+- [X] T014 [US1] Criar o commit da etapa 2, `feat: controla abertura da temporada`, com `server.py`, `client/index.html`, `tests/test_server.py` e `README.md` verificados (dep.: T013).
 
 **Checkpoint**: abertura e recusa por papel demonstráveis; os ciclos automáticos entram nas etapas 4 e 7.
 

@@ -106,3 +106,27 @@ async def connect(sid, environ, auth=None):
 async def disconnect(sid, reason=None):
     async with lock:
         sessoes.pop(sid, None)
+
+
+async def recusar(sid, causa, motivo):
+    """Chamado sob o lock; informa a recusa sem modificar a fazenda."""
+    await publicar("operacao.recusada", causa, sid=sid, motivo=motivo)
+
+
+@sio.on("vila.abertura_solicitada")
+async def abrir_vila(sid, dados=None):
+    global aberta_em
+    causa = "vila.abertura_solicitada"
+    async with lock:
+        # O papel pertence à sessão, nunca ao payload do pedido.
+        if sessoes.get(sid, {}).get("papel") != "mestre":
+            await recusar(sid, causa, "Só o Mestre pode abrir a temporada")
+            return
+        if estado["fase"] != "aguardando":
+            await recusar(sid, causa, "A temporada já foi aberta")
+            return
+
+        aberta_em = agora()
+        estado["aberta_em_ms"] = instante_publico(aberta_em)
+        estado["fase"] = "aberta"
+        await publicar("vila.iniciada", causa)
