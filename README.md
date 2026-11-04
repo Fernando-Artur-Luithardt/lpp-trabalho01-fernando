@@ -1,13 +1,14 @@
 # Vila em Tempo Real — Fazenda (tema 19)
 
-Etapas 1–6 implementadas: conexão, abertura, construções, produção a cada cinco
-segundos, conclusão das obras após oito segundos, encerramento com cancelamento
-dos efeitos pendentes e moagem de trigo em farinha. O servidor mantém a fazenda
-em memória e decide todas as alterações. Coleta será acrescentada na próxima etapa.
+Etapas 1–7 implementadas: conexão, abertura, construções, produção a cada cinco
+segundos, conclusão após oito segundos, moagem e colheitas de 30 trigo a cada
+20 segundos, disponíveis por 10 segundos. Somente Jogadores constroem e coletam.
+O servidor mantém a fazenda em memória, decide todas as alterações e interrompe
+os efeitos pendentes ao encerrar, preservando o retrato final.
 
 ## Integrantes
 
-- Nome — @usuario-github
+- Fernando Artur Luithardt — [@Fernando-Artur-Luithardt](https://github.com/Fernando-Artur-Luithardt)
 
 ## Como instalar e executar
 
@@ -36,7 +37,7 @@ Nenhuma dependência foi adicionada e os assets do kit foram preservados.
    **Entrar como Mestre**. Na segunda, informe **Jogador A** e entre como Jogador.
 2. Confira em ambas: fase **aguardando**, **150 trigo**, **0 farinha**,
    **0/3 agricultores**, **0 moinhos**, **0 obras** e nenhuma colheita.
-   A produção bruta indicada é a taxa configurada; ainda não há produção automática.
+   A produção bruta indicada é a taxa configurada; a produção começa após a abertura.
 3. No painel de cada aba deve existir exatamente um `estado.sincronizado`, com
    sentido recebido (`on`), horário, causa **conexao**, dados e reação de atualização.
    A entrada de A não acrescenta outro evento no painel do Mestre.
@@ -397,7 +398,10 @@ ciclo normal de produção.
    `vila.encerramento_solicitado` resulta em `vila.encerrada` global ou recusa
    privada; produção e conclusão são suspensas após o fato de encerramento. Na
    Etapa 6, `recurso.produzido` pode ser seguido por `farinha.moida` no mesmo
-   ciclo, com causa `recurso.produzido`.
+   ciclo, com causa `recurso.produzido`. Na Etapa 7, o temporizador emite
+   `colheita.amadurecida`; `colheita.coleta_solicitada` gera `colheita.coletada`
+   ou recusa privada. Sem coleta, `colheita.estragada` tem causa
+   `colheita.amadurecida` e não debita o celeiro.
 2. **Como sabe quando atualizar os outros jogadores?** O estado pertence ao
    servidor. Nesta etapa, entrar não muda a fazenda, então somente quem entrou
    recebe o snapshot. Ao aceitar abertura, construção ou encerramento, `publicar`
@@ -434,8 +438,112 @@ com testes controlados e navegador. Na Etapa 5, auxiliou no encerramento com
 cancelamento dos temporizadores, na sincronização visual do estado final e na
 verificação da disputa concorrente com três clientes. Na Etapa 6, auxiliou na
 moagem sob lock, nos snapshots sequenciais de produção/moagem e na verificação
-V6 com os três participantes.
+V6 com os três participantes. Na Etapa 7, auxiliou nos testes de fronteira e
+concorrência, nos temporizadores de colheita, nas reações do cliente e na
+verificação final automatizada com M/A/B. Os resultados e limites dessa
+verificação estão registrados abaixo.
 
 ## Extras
 
 Nenhum extra de domínio implementado nesta etapa.
+
+## Etapa 7 — Colheitas e verificação final
+
+Implementação e verificação em **2026-11-04**, a partir de `3505dda`. Mantidos
+Python 3.14.7, as dependências e os assets do kit. README e rodapé identificam
+Fernando Artur Luithardt, conforme autoria e repositório Git.
+
+A abertura agenda amadurecimentos em abertura + n×20 s. Cada colheita tem
+identidade própria, vale 30 e dura 10 s. A coleta não ocupa agricultor. Sob o
+mesmo lock, o servidor valida fase → papel → disponibilidade/prazo. O tratador
+captura o relógio monotônico antes de qualquer espera e solicita imediatamente
+o lock. Só aceita chegada estritamente anterior ao vencimento; o relógio do
+cliente não decide. A remoção da identidade invalida a expiração antiga.
+Encerrar cancela as tarefas e preserva inclusive a colheita ainda disponível.
+
+Exemplos de causa → dados → reação:
+
+- `temporizador` → `colheita.amadurecida`, identidade, valor 30, prazo 10 →
+  mostrar valor e prazo indicativo; avisar sem creditar o celeiro.
+- `colheita.coleta_solicitada` → `colheita.coletada`, identidade, quantidade 30 →
+  aplicar snapshot, retirar indicador e avisar crédito confirmado.
+- `colheita.amadurecida` → `colheita.estragada`, identidade, valor_perdido 30,
+  gatilho temporizador → retirar indicador e avisar perda sem débito no celeiro.
+- Pedido inválido → `operacao.recusada`, motivo e estado corrente → somente o
+  solicitante recebe o aviso; o pedido não altera recursos.
+
+A contagem pode chegar a zero enquanto aguarda o fato do servidor. Ela não
+remove colheitas, confirma perda nem credita recursos. Ao encerrar, usa
+`encerrada_em_ms` e interrompe seu intervalo local. O botão Coletar pertence
+somente ao Jogador; os testes também enviam pedidos proibidos diretamente ao
+servidor, sem depender dos controles da interface.
+
+### Suíte controlada
+
+**38 testes passaram** com `unittest`, incluindo os 28 anteriores e dez novos
+casos de colheita. Os testes verificam amadurecimento sem antecipação, calendário
+20/40/60, unicidade, snapshots copiados e sem campos monotônicos, crédito único,
+sem ocupação de agricultor, disputa A/B, causas e destinatários. Verificam também
+chegada em T−ε/T/T+ε com timer atrasado, duas coletas antes de T aguardando o lock
+até T+ε, timer que acorda cedo, identidade antiga, prioridade fase/papel, perda
+única sem débito e encerramento à frente da coleta na fila. Com obra, produção,
+amadurecimento e expiração pendentes, o retrato final permanece inalterado e a
+conexão tardia recebe esse mesmo retrato.
+
+A execução inicial dos novos testes falhou por ausência dos tratadores; depois
+da implementação, a suíte completa passou. Não foram alterados requisitos,
+contratos ou as decisões 1A/2A.
+
+### Aceitação em três clientes
+
+Os roteiros usam três páginas reais do Chrome headless (Mestre, A e B), Socket.IO,
+Vue e Phaser, com servidores Uvicorn reiniciados entre temporadas. Estados
+artificiais e precisão da fronteira temporal ficam somente nos testes unitários.
+O instrumento externo usa o protocolo de depuração do Chrome, sem dependência
+nova no projeto. Falhas iniciais de sintaxe/serialização do instrumento foram
+corrigidas antes dos resultados; não eram falhas do domínio.
+
+| Roteiro | Condição, ações e resultado |
+| --- | --- |
+| V1 | M/A/B recebem 150 trigo/0 farinha/0 agricultores; snapshots privados. Reconexão de B recebe novo snapshot e mantém um canvas. |
+| V1 — entrada tardia/recarga | B entra durante obra e colheita pendentes, recebe as mesmas identidades e prazos; recarrega durante a temporada e após encerrar, mantendo um canvas e o retrato correto. M/A não recebem seus snapshots privados. Rodapé conferido no navegador. |
+| V2 | M abre sem crédito imediato; segunda abertura recebe recusa somente em M. Validação de Jogador coberta pela suíte. |
+| V3 | Pedido direto de A antes da abertura recebe recusa privada; após abrir, uma obra debita 50 em todos. Estoque 49/50, vagas e prioridade do Mestre verificados em estados controlados. |
+| V4 | Obra gera 100 → 110 trigo, conclui sem clique e libera agricultor. Reconexão durante a obra preserva identidade e prazo, sem duplicar canvas. |
+| V5 | Aos 25 s, 200 trigo; duas obras deixam 100 e 2/3 ocupados. A/B disputam: uma aceitação, uma recusa privada, 50 trigo e 3/3. Encerramento preserva tudo por mais de 20 s e reconexão recebe o retrato final. |
+| V6 | Produção mostra 130 e é seguida de moagem com causa `recurso.produzido`, consumo 5, produção 3, estado 125 trigo/3 farinha nos três clientes. Painel mostra causa/dados/reação. |
+| V7 — disputa/fim | Colheita de 30 aos 20 s; A/B disputam, um crédito e uma recusa privada. Nenhuma perda da identidade coletada; nova colheita aos 40 s. Obra e colheita pendentes preservadas após encerramento por mais de 20 s; contagem congelada. |
+| V7 — perda | Sem obras/coletas, amadurecimento aos 20 s e perda única aos 30 s; após a produção simultânea, 210 trigo/0 farinha. Coleta posterior recusada somente em A. |
+
+### Cobertura e pendências de entrega
+
+| Cenários / critérios | Evidência na versão final |
+| --- | --- |
+| US1.1–US1.8 | V1/V2/V4/V5/V7 e testes de sessão, papéis, abertura, produção, encerramento e reconexão. |
+| US2.1–US2.9 | V3–V6 e testes controlados de estoque/vagas, ordem de validação, disputa, prazos, moagem e elegibilidade na fronteira do intervalo. |
+| US3.1–US3.9 | V7 e dez testes controlados de colheita, incluindo os papéis de 1A e a fronteira estrita de 2A. |
+| SC-001 / SC-006 | Comparação dos estados M/A/B; fatos globais, recusas privadas e painel com causa/dados/reação. |
+| SC-002 / SC-003 | Sequência 100/110/130/125 e farinha 3; disputa pela última vaga com estoque suficiente. |
+| SC-004 / SC-005 | Crédito/perda únicos; nenhuma atividade após encerrar com obra e colheita pendentes por mais de um ciclo de 20 s. |
+| SC-007 | Resultados de todos os grupos de cenários registrados acima; limites exatos demonstrados por relógio controlado. |
+
+Comandos de verificação:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+.venv/bin/python -m py_compile server.py tests/test_server.py
+.venv/bin/python -m pip check
+node /tmp/fazenda-etapa7-browser.mjs
+node /tmp/fazenda-etapa7-browser.mjs --remaining
+git diff --check
+```
+
+O script de navegador em `/tmp` é um instrumento temporário, não parte da
+aplicação. O [quickstart](specs/001-fazenda-tempo-real/quickstart.md) mantém os
+passos para repetir V1–V7. A suíte permanente e os roteiros automatizados passaram;
+**permanece pendente repetir V1–V7 manualmente com interação humana em três abas
+visíveis antes da apresentação acadêmica**. A automação registrada não equivale
+a essa sessão manual. Não há pendência funcional conhecida; os requisitos de
+milissegundos devem continuar sendo conferidos por testes controlados.
+
+Não existe `.specify/extensions.yml`; não há hooks de implementação registrados.

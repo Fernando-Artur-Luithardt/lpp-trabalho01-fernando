@@ -66,7 +66,8 @@
       <p>👷 Agricultores: {{ estado.trabalhadores }}/{{ estado.limite }}
         <progress :value="estado.trabalhadores" :max="estado.limite"></progress></p>
       <p>🏠 Moinhos: {{ estado.concluidas }} concluídos, {{ estado.em_obra }} em obra</p>
-      <p>Colheita: {{ estado.colheita ? estado.colheita.valor + ' de trigo disponíveis' : 'nenhuma disponível' }}</p>
+      <p>Colheita: {{ estado.colheita ? estado.colheita.valor + ' de trigo' : 'nenhuma disponível' }}
+        <span v-if="estado.colheita"> · {{ estado.fase === 'encerrada' ? 'prazo congelado' : 'prazo indicativo' }}: {{ prazoColheita }} s</span></p>
     </section>
 
     <section>
@@ -74,8 +75,11 @@
         <button :disabled="!conectado" @click="abrirVila">Abrir temporada</button>
         <button :disabled="!conectado || estado.fase !== 'aberta'" @click="encerrarVila">Encerrar temporada</button>
       </template>
-      <button v-else :disabled="!conectado || estado.fase !== 'aberta'" @click="construir">🔨 Construir (custo {{ estado.custo }} trigo)</button>
-      <p>As barras indicam o prazo das obras. Produção e conclusão são automáticas. Coleta e moagem ainda indisponíveis.</p>
+      <template v-else>
+        <button :disabled="!conectado || estado.fase !== 'aberta'" @click="construir">🔨 Construir (custo {{ estado.custo }} trigo)</button>
+        <button :disabled="!conectado || estado.fase !== 'aberta' || !estado.colheita" @click="coletar">Coletar</button>
+      </template>
+      <p>Barras e contagem são indicativas. Produção, moagem, conclusão e colheitas são controladas pelo servidor.</p>
     </section>
 
     <ul class="avisos">
@@ -89,7 +93,6 @@
         <span class="badge emit">⬆ emit</span> este cliente PEDIU algo ao servidor ·
         <span class="badge on">⬇ on</span> este cliente ESCUTOU um evento e reagiu
       </p>
-      <!-- ETAPA 7 (dupla): cole aqui os contadores por evento -->
       <label><input type="checkbox" v-model="ocultarProducao"> ocultar recurso.produzido (é muito frequente)</label>
       <ul>
         <li v-for="e in eventosVisiveis" :class="e.tipo">
@@ -104,7 +107,7 @@
     </section>
   </main>
 
-  <footer>Desenvolvido por: [Nome do(a) Aluno(a)]</footer>
+  <footer>Desenvolvido por: Fernando Artur Luithardt</footer>
 </div>
 
 <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.js"></script>
@@ -295,7 +298,7 @@
   // =====================================================================
   //  A APLICAÇÃO (Vue + Socket.IO) - é aqui que você trabalha.
   // =====================================================================
-  const { createApp, ref, reactive, computed, nextTick } = Vue;
+  const { createApp, ref, reactive, computed, nextTick, onUnmounted } = Vue;
 
   createApp({
     setup() {
@@ -327,8 +330,28 @@
         avisos.value = avisos.value.slice(0, 6);
       }
 
+      const tempoServidor = ref(0);
+      let referenciaColheita = null;
+      let timerColheita = null;
+      const prazoColheita = computed(() => estado.colheita
+        ? Math.max(0, Math.ceil((estado.colheita.expira_em_ms - tempoServidor.value) / 1000)) : 0);
+      function pararContagem() {
+        if (timerColheita !== null) clearInterval(timerColheita);
+        timerColheita = null;
+      }
+      onUnmounted(pararContagem);
+
       function atualizar(d) {
         Object.assign(estado, d.estado);   // copia o estado enviado pelo servidor
+        pararContagem();
+        tempoServidor.value = estado.fase === "encerrada" ? estado.encerrada_em_ms : d.servidor_em_ms;
+        referenciaColheita = { servidor: tempoServidor.value, local: performance.now() };
+        if (estado.colheita && estado.fase === "aberta") {
+          timerColheita = setInterval(() => {
+            tempoServidor.value = referenciaColheita.servidor + performance.now() - referenciaColheita.local;
+          }, 100);
+        }
+        // A contagem não remove colheitas nem credita trigo; só os eventos decidem.
       }
 
       // ----- painel de eventos (já pronto) -----
@@ -397,6 +420,18 @@
         atualizar(d);
         jogo.obraConcluida(d);
       });
+      ouvir("colheita.amadurecida", "exibir valor e prazo indicativo da colheita; estoque preservado", (d) => {
+        atualizar(d);
+        avisar(`Colheita #${d.colheita_id}: ${d.valor} trigo disponíveis por ${d.prazo} segundos.`);
+      });
+      ouvir("colheita.coletada", "retirar indicador e aplicar o crédito confirmado pelo servidor", (d) => {
+        atualizar(d);
+        avisar(`Colheita #${d.colheita_id} coletada: +${d.quantidade} trigo.`, "ok");
+      });
+      ouvir("colheita.estragada", "retirar indicador; informar perda sem débito no celeiro", (d) => {
+        atualizar(d);
+        avisar(`Colheita #${d.colheita_id} estragada: ${d.valor_perdido} trigo não coletados. Estoque do celeiro preservado.`, "erro");
+      });
       ouvir("vila.encerrada", "aplicar o retrato final, congelar barras e indicar a temporada encerrada", (d) => {
         atualizar(d);
         jogo.mostrarEstado(d.estado, d.servidor_em_ms);
@@ -434,12 +469,15 @@
       function construir() {
         pedir("construcao.solicitada");
       }
+      function coletar() {
+        pedir("colheita.coleta_solicitada");
+      }
       function encerrarVila() {
         pedir("vila.encerramento_solicitado");
       }
 
       return { nome, papel, conectado, entrou, conectando, erroConexao, estado, avisos, eventosVisiveis, contadores, ocultarProducao, porMinuto,
-               entrar, abrirVila, construir, encerrarVila };
+               entrar, abrirVila, construir, coletar, prazoColheita, encerrarVila };
     }
   }).mount("#app");
 </script>

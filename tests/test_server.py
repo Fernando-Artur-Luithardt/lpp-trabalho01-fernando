@@ -141,14 +141,18 @@ class ServidorTests(unittest.IsolatedAsyncioTestCase):
     async def test_segunda_abertura_preserva_estado_e_instantes(self):
         await self.participantes()
         await self.abrir("M")
-        self.agendar.assert_called_once_with(server.ciclo_producao, 100.0)
+        self.assertEqual(self.agendar.call_count, 2)
+        self.agendar.assert_any_call(server.ciclo_producao, 100.0)
+        self.agendar.assert_any_call(server.ciclo_colheitas, 100.0)
         primeiro_evento = self.emit.await_args.args[1]
         anterior = server.snapshot()
         self.emit.reset_mock()
         self.relogio.return_value = 120.0
         await self.abrir("M")
         self.conferir_recusa("M", "A temporada já foi aberta", anterior)
-        self.agendar.assert_called_once_with(server.ciclo_producao, 100.0)
+        self.assertEqual(self.agendar.call_count, 2)
+        self.agendar.assert_any_call(server.ciclo_producao, 100.0)
+        self.agendar.assert_any_call(server.ciclo_colheitas, 100.0)
         self.assertEqual(server.aberta_em, 100.0)
         self.assertEqual(server.estado["aberta_em_ms"], 1_000_000)
         self.assertEqual(primeiro_evento["estado"], anterior)
@@ -571,6 +575,211 @@ class EncerramentoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server.estado["trigo"], 50)
         self.assertEqual(server.snapshot()["trabalhadores"], 3)
         self.assertEqual(server.snapshot()["em_obra"], 3)
+
+
+class ColheitasTests(unittest.IsolatedAsyncioTestCase):
+    setUp = ServidorTests.setUp
+    transmitir = ServidorTests.transmitir
+    participantes = ServidorTests.participantes
+    conferir_recusa = ServidorTests.conferir_recusa
+
+    async def preparar(self):
+        await self.participantes()
+        server.estado['fase'] = 'aberta'
+        self.relogio.return_value = 120
+        await server.amadurecer_em(120)
+        self.emit.reset_mock()
+        return deepcopy(server.estado['colheita'])
+
+    async def coletar(self, sid):
+        await server.sio.handlers['/']['colheita.coleta_solicitada'](sid, {'valor': 999, 'recebido_em': 0})
+
+    async def test_calendario_unicidade_e_snapshot_publico(self):
+        prazos = []
+        async def amadurecer(prazo):
+            prazos.append(prazo)
+            return len(prazos) < 3
+        with patch.object(server, 'amadurecer_em', side_effect=amadurecer):
+            await server.ciclo_colheitas(100)
+        self.assertEqual(prazos, [120, 140, 160])
+        await self.participantes()
+        self.relogio.return_value = 120
+        self.assertFalse(await server.amadurecer_em(120))
+        self.emit.assert_not_awaited()
+        server.estado['fase'] = 'aberta'
+        await server.amadurecer_em(120)
+        fato = self.emit.await_args.args[1]
+        self.assertEqual(self.emit.await_args.args[0], 'colheita.amadurecida')
+        self.assertEqual(self.emit.await_args.kwargs, {'to': None})
+        self.assertEqual((fato['causa'], fato['valor'], fato['prazo']), ('temporizador', 30, 10))
+        self.assertEqual(set(fato['estado']['colheita']), {'id', 'valor', 'amadurecida_em_ms', 'expira_em_ms'})
+        self.assertEqual(fato['estado']['colheita']['expira_em_ms'], 1_030_000)
+        self.assertEqual(fato['estado']['trigo'], 150)
+        await server.amadurecer_em(120)
+        self.assertEqual(self.emit.await_count, 1)
+        await self.coletar('A')
+        self.assertIsNotNone(fato['estado']['colheita'])
+        self.relogio.return_value = 140
+        await server.amadurecer_em(140)
+        self.assertNotEqual(fato['colheita_id'], server.estado['colheita']['id'])
+
+    async def test_amadurecimento_aguarda_20_segundos_fora_do_lock(self):
+        await self.participantes()
+        server.estado['fase'] = 'aberta'
+        self.relogio.return_value = 119.999
+        acordar = asyncio.Event()
+        async def esperar(segundos):
+            self.assertFalse(server.lock.locked())
+            self.assertAlmostEqual(segundos, 0.001)
+            await acordar.wait()
+        with patch.object(server, 'esperar', side_effect=esperar):
+            tarefa = asyncio.create_task(server.amadurecer_em(120))
+            await asyncio.sleep(0)
+            self.assertIsNone(server.estado['colheita'])
+            self.emit.assert_not_awaited()
+            self.relogio.return_value = 120
+            acordar.set()
+            await tarefa
+        self.assertEqual(self.emit.await_args.args[0], 'colheita.amadurecida')
+        self.assertEqual(server.estado['colheita']['expira_em'], 130)
+
+    async def test_disputa_credito_unico_sem_agricultor_e_timer_antigo(self):
+        colheita = await self.preparar()
+        await asyncio.gather(self.coletar('A'), self.coletar('B'))
+        fato, recusa = self.emit.await_args_list
+        self.assertEqual(fato.args[0], 'colheita.coletada')
+        self.assertEqual(fato.kwargs, {'to': None})
+        self.assertEqual((fato.args[1]['quantidade'], fato.args[1]['colheita_id'], fato.args[1]['causa']), (30, colheita['id'], 'colheita.coleta_solicitada'))
+        self.assertEqual(recusa.kwargs, {'to': 'B'})
+        self.assertEqual(recusa.args[1]['motivo'], 'Não há colheita para coletar')
+        self.assertEqual(server.estado['trigo'], 180)
+        self.assertEqual(server.snapshot()['trabalhadores'], 0)
+        self.assertIsNone(server.estado['colheita'])
+        self.relogio.return_value = 140
+        await server.amadurecer_em(140)
+        anterior = server.snapshot()
+        self.emit.reset_mock()
+        await server.expirar_colheita(colheita['id'], 130)
+        self.assertEqual(server.snapshot(), anterior)
+        self.emit.assert_not_awaited()
+
+    async def test_fronteira_estrita_timer_atrasado_e_expiracao_unica(self):
+        for chegada in (129.999, 130, 130.001):
+            with self.subTest(chegada=chegada):
+                server.estado['colheita'] = None
+                colheita = await self.preparar()
+                anterior = server.snapshot()
+                self.relogio.return_value = chegada
+                await self.coletar('A')
+                if chegada < 130:
+                    self.assertEqual(server.estado['trigo'], anterior['trigo'] + 30)
+                else:
+                    self.conferir_recusa('A', 'Não há colheita para coletar', anterior, 'colheita.coleta_solicitada')
+                self.emit.reset_mock()
+                self.relogio.return_value = 131
+                await server.expirar_colheita(colheita['id'], 130)
+                await server.expirar_colheita(colheita['id'], 130)
+                if chegada < 130:
+                    self.emit.assert_not_awaited()
+                else:
+                    self.assertEqual(self.emit.await_count, 1)
+                    fato = self.emit.await_args.args[1]
+                    self.assertEqual(self.emit.await_args.args[0], 'colheita.estragada')
+                    self.assertEqual(self.emit.await_args.kwargs, {'to': None})
+                    self.assertEqual((fato['causa'], fato['gatilho'], fato['valor_perdido'], fato['colheita_id']), ('colheita.amadurecida', 'temporizador', 30, colheita['id']))
+                    self.assertEqual(server.estado['trigo'], anterior['trigo'])
+
+    async def test_fase_papel_e_ausencia_nessa_ordem(self):
+        await self.participantes()
+        for fase, sid, motivo in [('aguardando', 'M', 'A temporada não está aberta'), ('encerrada', 'A', 'A temporada não está aberta'), ('encerrada', 'M', 'A temporada não está aberta'), ('aberta', 'M', 'Só o Jogador pode coletar'), ('aberta', 'A', 'Não há colheita para coletar')]:
+            with self.subTest(fase=fase, sid=sid):
+                server.estado['fase'] = fase
+                anterior = server.snapshot()
+                self.emit.reset_mock()
+                await self.coletar(sid)
+                self.conferir_recusa(sid, motivo, anterior, 'colheita.coleta_solicitada')
+        await self.preparar()
+        anterior = server.snapshot()
+        await self.coletar('M')
+        self.conferir_recusa('M', 'Só o Jogador pode coletar', anterior, 'colheita.coleta_solicitada')
+
+    async def test_chegada_antes_do_prazo_aguarda_lock_sem_perder_validade(self):
+        colheita = await self.preparar()
+        async with server.lock:
+            self.relogio.return_value = 129.999
+            a = asyncio.create_task(self.coletar('A'))
+            b = asyncio.create_task(self.coletar('B'))
+            await asyncio.sleep(0)
+            self.relogio.return_value = 130
+            timer = asyncio.create_task(server.expirar_colheita(colheita['id'], 130))
+            await asyncio.sleep(0)
+            self.emit.assert_not_awaited()
+            self.relogio.return_value = 130.001
+        await asyncio.gather(a, b, timer)
+        self.assertEqual([c.args[0] for c in self.emit.await_args_list], ['colheita.coletada', 'operacao.recusada'])
+        self.assertEqual(server.estado['trigo'], 180)
+
+    async def test_expiracao_acorda_cedo_e_espera_fora_do_lock(self):
+        colheita = await self.preparar()
+        esperas = []
+        async def esperar(segundos):
+            self.assertFalse(server.lock.locked())
+            esperas.append(segundos)
+            self.relogio.return_value += min(segundos, 5)
+        with patch.object(server, 'esperar', side_effect=esperar):
+            await server.expirar_colheita(colheita['id'], 130)
+        self.assertEqual(esperas, [10, 5])
+        self.assertEqual(server.estado['trigo'], 150)
+        self.assertIsNone(server.estado['colheita'])
+
+    async def test_producao_e_perda_aos_30_sem_debito(self):
+        await self.preparar()
+        colheita = server.estado['colheita']
+        for instante in range(105, 131, 5):
+            self.relogio.return_value = instante
+            await server.produzir_em(instante)
+        await server.expirar_colheita(colheita['id'], 130)
+        self.assertEqual((server.estado['trigo'], server.estado['farinha']), (210, 0))
+
+    async def test_encerramento_preserva_colheita_e_cancela_atividades(self):
+        colheita = await self.preparar()
+        obra = server.criar_obra()
+        server.estado['obras'].append(obra)
+        async def esperar(segundos):
+            await asyncio.Future()
+        with patch.object(server, 'esperar', side_effect=esperar):
+            for coro in (server.ciclo_colheitas(100), server.expirar_colheita(colheita['id'], 130), server.ciclo_producao(120), server.concluir_obra(obra['id'])):
+                server.tarefas.add(asyncio.create_task(coro))
+            await asyncio.sleep(0)
+            await server.encerrar_vila('M')
+            self.assertTrue(all(t.done() for t in server.tarefas))
+        anterior = server.snapshot()
+        self.assertEqual(anterior['colheita']['id'], colheita['id'])
+        self.emit.reset_mock()
+        self.relogio.return_value = 160
+        await server.amadurecer_em(140)
+        await server.expirar_colheita(colheita['id'], 130)
+        await server.produzir_em(160)
+        await server.concluir_obra(obra['id'])
+        self.emit.assert_not_awaited()
+        await server.connect('B2', {}, {'papel': 'jogador'})
+        self.assertEqual(self.emit.await_args.args[1]['estado'], anterior)
+        self.emit.reset_mock()
+        await self.coletar('A')
+        self.conferir_recusa('A', 'A temporada não está aberta', anterior, 'colheita.coleta_solicitada')
+
+    async def test_encerramento_na_fila_antes_da_coleta_tem_prioridade(self):
+        await self.preparar()
+        async with server.lock:
+            fim = asyncio.create_task(server.encerrar_vila('M'))
+            await asyncio.sleep(0)
+            coleta = asyncio.create_task(self.coletar('A'))
+            await asyncio.sleep(0)
+        await asyncio.gather(fim, coleta)
+        self.assertEqual(server.estado['trigo'], 150)
+        self.assertIsNotNone(server.estado['colheita'])
+        self.assertEqual(self.emit.await_args.args[1]['motivo'], 'A temporada não está aberta')
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,7 @@ app = socketio.ASGIApp(sio, static_files={
     "/assets": "client/assets",      # mapa, tileset e sprites da vila
 })
 
-# Uma fazenda por processo. As próximas etapas acrescentam suas transições.
+# Uma fazenda por processo, com decisões serializadas pelo lock.
 TEMA = 19
 TRIGO_INICIAL = 150
 LIMITE_AGRICULTORES = 3
@@ -19,6 +19,9 @@ CUSTO_OBRA = 50
 TEMPO_OBRA = 8
 INTERVALO_PRODUCAO = 5
 PRODUCAO_BASE = 10
+INTERVALO_COLHEITA = 20
+PRAZO_COLHEITA = 10
+VALOR_COLHEITA = 30
 
 estado = {
     "tema": TEMA,
@@ -65,6 +68,8 @@ def snapshot():
     campos_obra = ("id", "status", "iniciada_em_ms", "concluir_em_ms", "concluida_em_ms")
     copia["obras"] = [{campo: obra[campo] for campo in campos_obra}
                       for obra in estado["obras"]]
+    if copia["colheita"] is not None:
+        copia["colheita"].pop("expira_em", None)
     em_obra = sum(obra["status"] == "em_andamento" for obra in copia["obras"])
     concluidas = sum(obra["status"] == "concluida" for obra in copia["obras"])
     copia.update(trabalhadores=em_obra, em_obra=em_obra, concluidas=concluidas,
@@ -131,10 +136,11 @@ async def abrir_vila(sid, dados=None):
         estado["fase"] = "aberta"
         await publicar("vila.iniciada", causa)
         agendar(ciclo_producao, aberta_em)
+        agendar(ciclo_colheitas, aberta_em)
 
 
 def criar_obra():
-    """Cria identidade e prazos sob o lock; não agenda a conclusão nesta etapa."""
+    """Cria identidade e prazos sob o lock; a conclusão é agendada pelo tratador."""
     inicio = agora()
     prazo = inicio + TEMPO_OBRA
     return {
@@ -268,3 +274,66 @@ async def encerrar_vila(sid, dados=None):
     # para encerrar com segurança os tratadores de temporizador.
     if pendentes:
         await asyncio.gather(*pendentes, return_exceptions=True)
+
+
+async def amadurecer_em(prazo):
+    await esperar_ate(prazo)
+    async with lock:
+        if estado["fase"] != "aberta":
+            return False
+        if estado["colheita"] is None:
+            inicio = agora()
+            colheita = {
+                "id": next(identidades), "valor": VALOR_COLHEITA,
+                "amadurecida_em_ms": instante_publico(inicio),
+                "expira_em_ms": instante_publico(inicio + PRAZO_COLHEITA),
+                "expira_em": inicio + PRAZO_COLHEITA,
+            }
+            estado["colheita"] = colheita
+            await publicar("colheita.amadurecida", "temporizador",
+                           colheita_id=colheita["id"], valor=VALOR_COLHEITA,
+                           prazo=PRAZO_COLHEITA)
+            agendar(expirar_colheita, colheita["id"], colheita["expira_em"])
+        return True
+
+
+async def ciclo_colheitas(inicio):
+    ciclo = 1
+    while await amadurecer_em(inicio + ciclo * INTERVALO_COLHEITA):
+        ciclo += 1
+
+
+async def expirar_colheita(colheita_id, prazo):
+    # Só entra na fila do lock no prazo ou depois; coletas anteriores têm precedência.
+    await esperar_ate(prazo)
+    async with lock:
+        colheita = estado["colheita"]
+        if (estado["fase"] != "aberta" or colheita is None
+                or colheita["id"] != colheita_id):
+            return
+        estado["colheita"] = None
+        await publicar("colheita.estragada", "colheita.amadurecida",
+                       colheita_id=colheita_id, valor_perdido=VALOR_COLHEITA,
+                       gatilho="temporizador")
+
+
+@sio.on("colheita.coleta_solicitada")
+async def coletar(sid, dados=None):
+    recebido_em = agora()
+    async with lock:  # Nenhuma espera entre registrar a chegada e solicitar o lock.
+        causa = "colheita.coleta_solicitada"
+        if estado["fase"] != "aberta":
+            await recusar(sid, causa, "A temporada não está aberta")
+            return
+        if sessoes.get(sid, {}).get("papel") != "jogador":
+            await recusar(sid, causa, "Só o Jogador pode coletar")
+            return
+        colheita = estado["colheita"]
+        if colheita is None or recebido_em >= colheita["expira_em"]:
+            await recusar(sid, causa, "Não há colheita para coletar")
+            return
+        # Remover a identidade invalida a expiração, sem cancelar/esperar sob o lock.
+        estado["colheita"] = None
+        estado["trigo"] += VALOR_COLHEITA
+        await publicar("colheita.coletada", causa,
+                       colheita_id=colheita["id"], quantidade=VALOR_COLHEITA)
