@@ -1,9 +1,9 @@
 # Vila em Tempo Real — Fazenda (tema 19)
 
-Etapas 1–5 implementadas: conexão, abertura, construções, produção a cada cinco
-segundos, conclusão das obras após oito segundos e encerramento com cancelamento
-dos efeitos pendentes. O servidor mantém a fazenda em memória e decide todas as
-alterações. Moagem e coleta serão acrescentadas nas próximas etapas.
+Etapas 1–6 implementadas: conexão, abertura, construções, produção a cada cinco
+segundos, conclusão das obras após oito segundos, encerramento com cancelamento
+dos efeitos pendentes e moagem de trigo em farinha. O servidor mantém a fazenda
+em memória e decide todas as alterações. Coleta será acrescentada na próxima etapa.
 
 ## Integrantes
 
@@ -346,6 +346,44 @@ verificação registrada foi automatizada com M/A/B; não foi uma sessão manual
 humana. A retomada por pessoa dos roteiros V2, V3 e V4 continua pendente conforme
 as evidências anteriores.
 
+## Etapa 6 — Moagem de farinha
+
+Verificação em **2026-11-03**, sobre o commit `82df3f1`. A suíte permanente
+passou com **28 testes**. Os testes com relógio controlado cobrem: um moinho
+transforma 5 trigo em 3 farinha por ciclo; dois moinhos aptos transformam 10 em
+6; o trigo remanescente e a farinha anterior são preservados; moinhos sem trigo
+suficiente são ignorados; não há evento de moagem sem moinho apto; conclusão
+exatamente no limite não moe naquele ciclo e habilita o próximo; e temporada
+encerrada não produz nem mói. Os snapshots de `recurso.produzido` e
+`farinha.moida` são distintos e permanecem inalterados após ciclos seguintes.
+
+V6 foi executado com Mestre, Jogador A e Jogador B em três páginas reais do
+Chrome headless. M abriu a temporada e A iniciou uma obra. B entrou durante a
+obra e recebeu a mesma identidade e prazo, com um único registro visual. Aos
+5 s ocorreu produção sem moagem; a obra concluiu cerca de 8 s após o início.
+No ciclo de 10 s, todas as páginas receberam primeiro `recurso.produzido` com
+130 de trigo e farinha 0, depois `farinha.moida` com causa
+`recurso.produzido`, `moinhos: 1`, `trigo_consumido: 5` e
+`farinha_produzida: 3`. O estado final sincronizado foi 125 trigo, 3 farinha,
+um moinho concluído e nenhum agricultor ocupado. Os três painéis exibiram o
+evento e o aviso de transformação; nenhuma exceção JavaScript ocorreu.
+
+Comandos executados:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+.venv/bin/python -m py_compile server.py tests/test_server.py
+node /tmp/fazenda-etapa6-browser.mjs
+git diff --check
+```
+
+O script de navegador é temporário e externo ao repositório. **Verificação
+manual pendente:** repetir V6 com interação humana em três abas visíveis. O
+ensaio M/A/B registrado foi automatizado. Permanecem pendentes as repetições
+manuais humanas de V2–V5 já indicadas acima. O roteiro controlado cobre cenário
+sem moinho e estoque insuficiente, que não são alcançados naturalmente pelo
+ciclo normal de produção.
+
 ## Perguntas
 
 1. **Quais eventos o sistema emite e escuta nesta etapa?** O servidor trata
@@ -357,11 +395,14 @@ as evidências anteriores.
    Na Etapa 3, o Jogador emite `construcao.solicitada`; o servidor responde com
    `construcao.iniciada` global ou `operacao.recusada` privada. Na Etapa 5,
    `vila.encerramento_solicitado` resulta em `vila.encerrada` global ou recusa
-   privada; produção e conclusão são suspensas após o fato de encerramento.
+   privada; produção e conclusão são suspensas após o fato de encerramento. Na
+   Etapa 6, `recurso.produzido` pode ser seguido por `farinha.moida` no mesmo
+   ciclo, com causa `recurso.produzido`.
 2. **Como sabe quando atualizar os outros jogadores?** O estado pertence ao
    servidor. Nesta etapa, entrar não muda a fazenda, então somente quem entrou
    recebe o snapshot. Ao aceitar abertura, construção ou encerramento, `publicar`
-   envia `vila.iniciada`, `construcao.iniciada` ou `vila.encerrada` para todos; quando um pedido falha,
+   envia `vila.iniciada`, `construcao.iniciada` ou `vila.encerrada` para todos; a
+   moagem é publicada depois do snapshot de produção. Quando um pedido falha,
    `recusar` envia `operacao.recusada`
    somente ao `sid` solicitante, com o estado inalterado.
 3. **Onde aparece o paradigma orientado a eventos?** Em `server.py`, o tratador
@@ -376,7 +417,9 @@ as evidências anteriores.
    `atualizar`/`jogo.obraIniciada`. O snapshot reconcilia canteiros e barras por
    identidade sem reproduzir débitos. O encerramento segue `pedir` →
    `encerrar_vila` → `vila.encerrada`; o painel e a cena usam o snapshot recebido
-   e congelam a apresentação, inclusive após reconexão.
+   e congelam a apresentação, inclusive após reconexão. A moagem é uma reação a
+   `farinha.moida`: o cliente substitui os estoques pelo novo snapshot e avisa as
+   quantidades, sem recalcular a transformação.
 
 ## Uso de IA
 
@@ -389,7 +432,9 @@ Na Etapa 3, auxiliou na validação de construções, nos registros individuais,
 nas barras indicativas, na correção do classificador do painel e nas verificações
 com testes controlados e navegador. Na Etapa 5, auxiliou no encerramento com
 cancelamento dos temporizadores, na sincronização visual do estado final e na
-verificação da disputa concorrente com três clientes.
+verificação da disputa concorrente com três clientes. Na Etapa 6, auxiliou na
+moagem sob lock, nos snapshots sequenciais de produção/moagem e na verificação
+V6 com os três participantes.
 
 ## Extras
 

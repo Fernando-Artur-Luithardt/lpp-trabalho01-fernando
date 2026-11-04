@@ -354,13 +354,117 @@ class TemporizadoresTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(tempo[0], 108)
             self.assertEqual(server.snapshot()['trabalhadores'], 0)
             await server.produzir_em(110)
-            self.assertEqual(server.estado['trigo'], 130)
-            self.assertEqual(server.estado['farinha'], 0)
-            self.assertEqual([c.args[0] for c in emit.await_args_list], ['recurso.produzido','construcao.concluida','recurso.produzido'])
+            self.assertEqual(server.estado['trigo'], 125)
+            self.assertEqual(server.estado['farinha'], 3)
+            self.assertEqual([c.args[0] for c in emit.await_args_list], ['recurso.produzido','construcao.concluida','recurso.produzido','farinha.moida'])
             self.assertEqual(emit.await_args_list[0].args[1]['estado']['trigo'],110)
+            self.assertEqual(emit.await_args_list[2].args[1]['estado']['trigo'],130)
+            self.assertEqual(emit.await_args_list[2].args[1]['estado']['farinha'],0)
+            self.assertEqual(emit.await_args_list[3].args[1]['estado']['trigo'],125)
+            self.assertEqual(emit.await_args_list[3].args[1]['estado']['farinha'],3)
+            self.assertEqual(emit.await_args_list[3].args[1]['causa'],'recurso.produzido')
+            moagem = emit.await_args_list[3].args[1]
+            self.assertEqual((moagem['moinhos'], moagem['trigo_consumido'], moagem['farinha_produzida']), (1,5,3))
+            self.assertEqual(moagem['causa'], 'recurso.produzido')
             self.assertTrue(all(c.kwargs == {'to':None} for c in emit.await_args_list))
+            retrato_moagem = emit.await_args_list[3].args[1]['estado']
+            await server.produzir_em(115)
+            self.assertEqual(server.estado['trigo'],140)
+            self.assertEqual(server.estado['farinha'],6)
+            self.assertEqual(retrato_moagem['trigo'],125)
+            self.assertEqual(retrato_moagem['farinha'],3)
             await server.concluir_obra(obra['id'])
-            self.assertEqual(emit.await_count,3)
+            self.assertEqual(emit.await_count,6)
+
+    async def test_sem_moinho_apto_nao_emite_farinha_moida(self):
+        estado = deepcopy(ESTADO_INICIAL)
+        estado['fase'] = 'aberta'
+        emit = AsyncMock()
+        with patch.object(server, 'estado', estado), patch.object(server, 'lock', asyncio.Lock()), \
+             patch.object(server, 'agora', return_value=105.0), patch.object(server.sio, 'emit', emit):
+            await server.produzir_em(105.0)
+        self.assertEqual(estado['trigo'], 160)
+        self.assertEqual(estado['farinha'], 0)
+        self.assertEqual([chamada.args[0] for chamada in emit.await_args_list], ['recurso.produzido'])
+
+    async def test_moinho_sem_trigo_suficiente_e_pulado(self):
+        estado = deepcopy(ESTADO_INICIAL)
+        estado['fase'] = 'aberta'
+        estado['trigo'] = 4
+        estado['obras'] = [{
+            'id': 1, 'status': 'concluida', 'iniciada_em': 90.0,
+            'concluir_em': 98.0, 'concluida_em': 99.0,
+            'iniciada_em_ms': 990_000, 'concluir_em_ms': 998_000,
+            'concluida_em_ms': 999_000,
+        }]
+        with patch.object(server, 'estado', estado):
+            resultado = server.moer_moinhos(105.0)
+        self.assertIsNone(resultado)
+        self.assertEqual(estado['trigo'], 4)
+        self.assertEqual(estado['farinha'], 0)
+
+    async def test_cada_moinho_apto_moe_cinco_trigos_em_tres_farinha(self):
+        estado = deepcopy(ESTADO_INICIAL)
+        estado['fase'] = 'aberta'
+        estado['trigo'] = 13
+        estado['farinha'] = 4
+        estado['obras'] = [{
+            'id': i, 'status': 'concluida', 'iniciada_em': 90.0,
+            'concluir_em': 98.0, 'concluida_em': 99.0,
+            'iniciada_em_ms': 990_000, 'concluir_em_ms': 998_000,
+            'concluida_em_ms': 999_000,
+        } for i in (1, 2)]
+        with patch.object(server, 'estado', estado):
+            resultado = server.moer_moinhos(105.0)
+        self.assertEqual(resultado, {
+            'moinhos': 2, 'trigo_consumido': 10, 'farinha_produzida': 6,
+        })
+        self.assertEqual(estado['trigo'], 3)
+        self.assertEqual(estado['farinha'], 10)
+
+    async def test_conclusao_no_limite_so_habilita_moagem_no_ciclo_seguinte(self):
+        estado = deepcopy(ESTADO_INICIAL)
+        estado['fase'] = 'aberta'
+        estado['trigo'] = 100
+        estado['obras'] = [{
+            'id': 1, 'status': 'concluida', 'iniciada_em': 97.0,
+            'concluir_em': 105.0, 'concluida_em': 105.0,
+            'iniciada_em_ms': 997_000, 'concluir_em_ms': 1_005_000,
+            'concluida_em_ms': 1_005_000,
+        }]
+        emit = AsyncMock()
+        tempo = [105.0]
+        with patch.object(server, 'estado', estado), patch.object(server, 'lock', asyncio.Lock()), \
+             patch.object(server, 'agora', side_effect=lambda: tempo[0]), patch.object(server, 'esperar', new_callable=AsyncMock), \
+             patch.object(server.sio, 'emit', emit):
+            await server.produzir_em(105.0)
+            self.assertEqual([c.args[0] for c in emit.await_args_list], ['recurso.produzido'])
+            self.assertEqual(estado['trigo'], 120)
+            tempo[0] = 110.0
+            await server.produzir_em(110.0)
+        self.assertEqual([c.args[0] for c in emit.await_args_list],
+                         ['recurso.produzido', 'recurso.produzido', 'farinha.moida'])
+        self.assertEqual(estado['trigo'], 135)
+        self.assertEqual(estado['farinha'], 3)
+
+    async def test_encerrada_nao_produz_ou_moe(self):
+        estado = deepcopy(ESTADO_INICIAL)
+        estado['fase'] = 'encerrada'
+        estado['trigo'] = 17
+        estado['obras'] = [{
+            'id': 1, 'status': 'concluida', 'iniciada_em': 90.0,
+            'concluir_em': 98.0, 'concluida_em': 99.0,
+            'iniciada_em_ms': 990_000, 'concluir_em_ms': 998_000,
+            'concluida_em_ms': 999_000,
+        }]
+        emit = AsyncMock()
+        with patch.object(server, 'estado', estado), patch.object(server, 'lock', asyncio.Lock()), \
+             patch.object(server, 'agora', return_value=105.0), patch.object(server.sio, 'emit', emit):
+            self.assertFalse(await server.produzir_em(105.0))
+            self.assertIsNone(server.moer_moinhos(105.0))
+        self.assertEqual(estado['trigo'], 17)
+        self.assertEqual(estado['farinha'], 0)
+        emit.assert_not_awaited()
 
 
 class EncerramentoTests(unittest.IsolatedAsyncioTestCase):

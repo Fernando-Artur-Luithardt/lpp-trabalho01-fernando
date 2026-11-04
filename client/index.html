@@ -389,6 +389,10 @@
         atualizar(d);
         jogo.recursoProduzido(d.estado);
       });
+      ouvir("farinha.moida", "atualizar o retrato após a moagem e informar a transformação", (d) => {
+        atualizar(d);
+        avisar(`${d.moinhos} moinho(s): −${d.trigo_consumido} trigo, +${d.farinha_produzida} farinha.`, "ok");
+      });
       ouvir("construcao.concluida", "liberar agricultor e reconciliar o moinho pela identidade", (d) => {
         atualizar(d);
         jogo.obraConcluida(d);

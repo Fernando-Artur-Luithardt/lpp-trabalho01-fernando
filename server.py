@@ -185,6 +185,31 @@ async def esperar_ate(prazo):
         await esperar(prazo - agora())
 
 
+def moer_moinhos(instante_intervalo):
+    """Mói moinhos concluídos estritamente antes do intervalo; requer o lock."""
+    if estado["fase"] != "aberta":
+        return None
+    concluidos_antes = sum(
+        obra["status"] == "concluida"
+        and obra["concluida_em"] is not None
+        and obra["concluida_em"] < instante_intervalo
+        for obra in estado["obras"]
+    )
+    moinhos = min(concluidos_antes, estado["trigo"] // 5)
+    if not moinhos:
+        return None
+
+    trigo_consumido = moinhos * 5
+    farinha_produzida = moinhos * 3
+    estado["trigo"] -= trigo_consumido
+    estado["farinha"] += farinha_produzida
+    return {
+        "moinhos": moinhos,
+        "trigo_consumido": trigo_consumido,
+        "farinha_produzida": farinha_produzida,
+    }
+
+
 async def produzir_em(prazo):
     await esperar_ate(prazo)
     async with lock:
@@ -193,6 +218,9 @@ async def produzir_em(prazo):
         quantidade = snapshot()["producao"]
         estado["trigo"] += quantidade
         await publicar("recurso.produzido", "temporizador", quantidade=quantidade)
+        moagem = moer_moinhos(prazo)
+        if moagem:
+            await publicar("farinha.moida", "recurso.produzido", **moagem)
         return True
 
 
