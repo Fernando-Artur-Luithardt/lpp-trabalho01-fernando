@@ -1,9 +1,9 @@
 # Vila em Tempo Real — Fazenda (tema 19)
 
-Etapas 1–4 implementadas: conexão, abertura, construções, produção a cada cinco
-segundos e conclusão das obras após oito segundos. O servidor mantém a fazenda
-em memória e decide todas as alterações. Moagem, coleta e encerramento serão
-acrescentados nas próximas etapas.
+Etapas 1–5 implementadas: conexão, abertura, construções, produção a cada cinco
+segundos, conclusão das obras após oito segundos e encerramento com cancelamento
+dos efeitos pendentes. O servidor mantém a fazenda em memória e decide todas as
+alterações. Moagem e coleta serão acrescentadas nas próximas etapas.
 
 ## Integrantes
 
@@ -302,6 +302,50 @@ a conferência com cliques humanos não foi executada. Os registros das Etapas
 foi substituída pelo comportamento desta etapa. Moagem continua fora do escopo.
 Codex auxiliou na implementação dos temporizadores, testes e verificação M/A/B.
 
+## Etapa 5 — Encerramento e disputas
+
+Verificação em **2026-11-03**, após `ea6c846`. A suíte permanente passou com
+**23 testes**, incluindo encerramento por papel/fase, prioridade Mestre → fase,
+recusas privadas, snapshot final, cancelamento de produção e conclusão pendentes,
+repetição do encerramento e disputa concorrente pela última vaga. Os testes
+controlados confirmam que os temporizadores são cancelados e aguardados sem
+manter o lock, e que executar produção/conclusão depois do encerramento não altera
+estado nem emite fatos.
+
+V5 foi repetido com um processo Uvicorn e três páginas reais do Chrome headless
+(Mestre, A e B). O servidor produziu naturalmente 200 de trigo em 25 s, sem
+moinhos. A iniciou duas obras consecutivas: estoque 100, ocupação 2/3. Antes de
+qualquer obra ou novo ciclo interferir, A e B pediram a última construção em
+concorrência. Uma obra foi aceita, o débito único levou o estoque a 50 e a
+ocupação a 3/3. A outra solicitação recebeu somente em B a recusa
+“Sem agricultor livre”; M e A não receberam a recusa. A disputa não interferiu
+no ciclo nem nas obras antes da ação de encerrar.
+
+M encerrou com as três obras ainda pendentes. As três páginas receberam
+`vila.encerrada`, com fase encerrada, 50 de trigo, farinha 0, três agricultores
+ocupados e as mesmas três identidades em andamento. Após 21 s, estoques,
+contadores e prazos públicos continuavam iguais e não houve produção nem
+conclusão. A tentativa de construir depois do fim foi recusada privadamente.
+B recarregou já com a temporada encerrada e recebeu o snapshot final, três
+registros visuais e a faixa de encerramento; a cena manteve um canvas e nenhuma
+exceção JavaScript. O tratamento de `estado.sincronizado` reaplica também a
+apresentação de fim, sem duplicar a sombra, em recarga ou reconexão.
+
+Comandos executados:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+node /tmp/fazenda-etapa5-browser.mjs
+.venv/bin/python -m py_compile server.py tests/test_server.py
+git diff --check
+```
+
+O instrumento de navegador é temporário e externo ao repositório. **Verificação
+manual pendente:** repetir V5 com interação humana em três abas visíveis. A
+verificação registrada foi automatizada com M/A/B; não foi uma sessão manual
+humana. A retomada por pessoa dos roteiros V2, V3 e V4 continua pendente conforme
+as evidências anteriores.
+
 ## Perguntas
 
 1. **Quais eventos o sistema emite e escuta nesta etapa?** O servidor trata
@@ -311,11 +355,13 @@ Codex auxiliou na implementação dos temporizadores, testes e verificação M/A
    Na Etapa 2, também emite `vila.abertura_solicitada` e escuta `vila.iniciada`
    e `operacao.recusada`, com registro e reação via `pedir()` e `ouvir()`.
    Na Etapa 3, o Jogador emite `construcao.solicitada`; o servidor responde com
-   `construcao.iniciada` global ou `operacao.recusada` privada.
+   `construcao.iniciada` global ou `operacao.recusada` privada. Na Etapa 5,
+   `vila.encerramento_solicitado` resulta em `vila.encerrada` global ou recusa
+   privada; produção e conclusão são suspensas após o fato de encerramento.
 2. **Como sabe quando atualizar os outros jogadores?** O estado pertence ao
    servidor. Nesta etapa, entrar não muda a fazenda, então somente quem entrou
-   recebe o snapshot. Ao aceitar abertura ou construção, `publicar` envia
-   `vila.iniciada` ou `construcao.iniciada` para todos; quando um pedido falha,
+   recebe o snapshot. Ao aceitar abertura, construção ou encerramento, `publicar`
+   envia `vila.iniciada`, `construcao.iniciada` ou `vila.encerrada` para todos; quando um pedido falha,
    `recusar` envia `operacao.recusada`
    somente ao `sid` solicitante, com o estado inalterado.
 3. **Onde aparece o paradigma orientado a eventos?** Em `server.py`, o tratador
@@ -328,7 +374,9 @@ Codex auxiliou na implementação dos temporizadores, testes e verificação M/A
    `avisar`/`jogo.recusado` e explica que o pedido não alterou o estado.
    A construção segue `pedir` → tratador `construir` → `construcao.iniciada` →
    `atualizar`/`jogo.obraIniciada`. O snapshot reconcilia canteiros e barras por
-   identidade sem reproduzir débitos.
+   identidade sem reproduzir débitos. O encerramento segue `pedir` →
+   `encerrar_vila` → `vila.encerrada`; o painel e a cena usam o snapshot recebido
+   e congelam a apresentação, inclusive após reconexão.
 
 ## Uso de IA
 
@@ -339,7 +387,9 @@ Na Etapa 2, auxiliou no tratador de abertura, nas recusas privadas, nas escutas
 do cliente, nos 11 testes permanentes e no roteiro automatizado com M/A/B.
 Na Etapa 3, auxiliou na validação de construções, nos registros individuais,
 nas barras indicativas, na correção do classificador do painel e nas verificações
-com testes controlados e navegador.
+com testes controlados e navegador. Na Etapa 5, auxiliou no encerramento com
+cancelamento dos temporizadores, na sincronização visual do estado final e na
+verificação da disputa concorrente com três clientes.
 
 ## Extras
 

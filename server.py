@@ -215,3 +215,28 @@ async def concluir_obra(obra_id):
         obra["concluida_em_ms"] = instante_publico(obra["concluida_em"])
         await publicar("construcao.concluida", "construcao.iniciada",
                        obra_id=obra_id, gatilho="temporizador")
+
+
+@sio.on("vila.encerramento_solicitado")
+async def encerrar_vila(sid, dados=None):
+    global estado
+    causa = "vila.encerramento_solicitado"
+    async with lock:
+        if sessoes.get(sid, {}).get("papel") != "mestre":
+            await recusar(sid, causa, "Só o Mestre pode encerrar a temporada")
+            return
+        if estado["fase"] != "aberta":
+            await recusar(sid, causa, "A temporada não está aberta")
+            return
+        estado["fase"] = "encerrada"
+        estado["encerrada_em_ms"] = instante_publico()
+        pendentes = tuple(tarefa for tarefa in tarefas
+                          if tarefa is not asyncio.current_task() and not tarefa.done())
+        for tarefa in pendentes:
+            tarefa.cancel()
+        await publicar("vila.encerrada", causa)
+
+    # Nunca esperar pelo cancelamento enquanto se mantém o lock necessário
+    # para encerrar com segurança os tratadores de temporizador.
+    if pendentes:
+        await asyncio.gather(*pendentes, return_exceptions=True)

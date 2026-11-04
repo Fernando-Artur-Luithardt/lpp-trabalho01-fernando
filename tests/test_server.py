@@ -9,6 +9,7 @@ import server
 
 PEDIDO_ABERTURA = "vila.abertura_solicitada"
 PEDIDO_CONSTRUCAO = "construcao.solicitada"
+PEDIDO_ENCERRAMENTO = "vila.encerramento_solicitado"
 ESTADO_INICIAL = deepcopy(server.estado)
 
 
@@ -55,6 +56,9 @@ class ServidorTests(unittest.IsolatedAsyncioTestCase):
 
     async def construir(self, sid, *dados):
         await server.sio.handlers["/"][PEDIDO_CONSTRUCAO](sid, *dados)
+
+    async def encerrar(self, sid, *dados):
+        await server.sio.handlers["/"][PEDIDO_ENCERRAMENTO](sid, *dados)
 
     def conferir_recusa(self, sid, motivo, anterior, causa=PEDIDO_ABERTURA):
         self.emit.assert_awaited_once()
@@ -357,9 +361,112 @@ class TemporizadoresTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(c.kwargs == {'to':None} for c in emit.await_args_list))
             await server.concluir_obra(obra['id'])
             self.assertEqual(emit.await_count,3)
-            server.estado['fase']='encerrada'
-            await server.produzir_em(115)
-            self.assertEqual(emit.await_count,3)
+
+
+class EncerramentoTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Reutiliza o fixture sem herdar e duplicar os testes das etapas anteriores.
+        ServidorTests.setUp(self)
+
+    async def transmitir(self, evento, dados, *, to):
+        await ServidorTests.transmitir(self, evento, dados, to=to)
+
+    async def participantes(self):
+        await ServidorTests.participantes(self)
+
+    async def abrir(self, sid, *dados):
+        await ServidorTests.abrir(self, sid, *dados)
+
+    async def construir(self, sid, *dados):
+        await ServidorTests.construir(self, sid, *dados)
+
+    async def encerrar(self, sid, *dados):
+        await ServidorTests.encerrar(self, sid, *dados)
+
+    def conferir_recusa(self, sid, motivo, anterior, causa=PEDIDO_ABERTURA):
+        ServidorTests.conferir_recusa(self, sid, motivo, anterior, causa)
+
+    async def test_recusas_por_papel_antes_da_fase_e_destino_privado(self):
+        await self.participantes()
+        for fase, motivo in [("aguardando", "Só o Mestre pode encerrar a temporada"),
+                             ("aberta", "Só o Mestre pode encerrar a temporada"),
+                             ("encerrada", "Só o Mestre pode encerrar a temporada")]:
+            server.estado["fase"] = fase
+            anterior = server.snapshot()
+            self.emit.reset_mock()
+            await self.encerrar("A", {"papel": "mestre"})
+            self.conferir_recusa("A", motivo, anterior, PEDIDO_ENCERRAMENTO)
+        server.estado["fase"] = "aguardando"
+        anterior = server.snapshot()
+        self.emit.reset_mock()
+        await self.encerrar("M")
+        self.conferir_recusa("M", "A temporada não está aberta", anterior, PEDIDO_ENCERRAMENTO)
+
+    async def test_encerramento_preserva_snapshot_e_cancela_tarefas_fora_do_lock(self):
+        await self.participantes()
+        await self.abrir("M")
+        server.estado["trigo"] = 77
+        await self.construir("A")
+        final_obra = server.snapshot()
+        async def aguardar_timer(_segundos):
+            await asyncio.Future()
+        with patch.object(server, "esperar", side_effect=aguardar_timer):
+            producao_pendente = asyncio.create_task(server.ciclo_producao(server.aberta_em))
+            conclusao_pendente = asyncio.create_task(server.concluir_obra(1))
+            server.tarefas.update((producao_pendente, conclusao_pendente))
+            await asyncio.sleep(0)
+            self.emit.reset_mock()
+            await self.encerrar("M")
+            self.assertTrue(producao_pendente.cancelled())
+            self.assertTrue(conclusao_pendente.cancelled())
+        chamada = self.emit.await_args
+        self.assertEqual(chamada.args[0], "vila.encerrada")
+        self.assertEqual(chamada.kwargs, {"to": None})
+        self.assertEqual(chamada.args[1]["causa"], PEDIDO_ENCERRAMENTO)
+        self.assertEqual(chamada.args[1]["estado"]["fase"], "encerrada")
+        self.assertEqual(chamada.args[1]["estado"]["trigo"], 27)
+        self.assertEqual(chamada.args[1]["estado"]["trabalhadores"], 1)
+        self.assertEqual(chamada.args[1]["estado"]["obras"], final_obra["obras"])
+        self.assertFalse(server.lock.locked())
+        retrato = server.snapshot()
+        self.relogio.return_value += 30
+        await server.produzir_em(130)
+        await server.concluir_obra(1)
+        self.assertEqual(server.snapshot(), retrato)
+        self.assertEqual(self.emit.await_count, 1)
+        self.emit.reset_mock()
+        await self.construir("A")
+        self.conferir_recusa("A", "A temporada não está aberta", retrato, PEDIDO_CONSTRUCAO)
+
+    async def test_repeticao_e_reabertura_sao_recusadas_sem_mudar_retrato(self):
+        await self.participantes()
+        await self.abrir("M")
+        await self.encerrar("M")
+        final = server.snapshot()
+        self.emit.reset_mock()
+        await self.encerrar("M")
+        self.conferir_recusa("M", "A temporada não está aberta", final, PEDIDO_ENCERRAMENTO)
+
+    async def test_disputa_pelo_ultimo_agricultor(self):
+        await self.participantes()
+        await self.abrir("M")
+        server.estado["trigo"] = 200
+        await self.construir("A")
+        await self.construir("B")
+        self.assertEqual(server.snapshot()["trabalhadores"], 2)
+        self.assertEqual(server.estado["trigo"], 100)
+        self.emit.reset_mock()
+        await asyncio.gather(self.construir("A"), self.construir("B"))
+        fatos = [c for c in self.emit.await_args_list if c.args[0] == "construcao.iniciada"]
+        recusas = [c for c in self.emit.await_args_list if c.args[0] == "operacao.recusada"]
+        self.assertEqual(len(fatos), 1)
+        self.assertEqual(fatos[0].kwargs, {"to": None})
+        self.assertEqual(len(recusas), 1)
+        self.assertEqual(recusas[0].kwargs["to"], "B")
+        self.assertEqual(recusas[0].args[1]["motivo"], "Sem agricultor livre")
+        self.assertEqual(server.estado["trigo"], 50)
+        self.assertEqual(server.snapshot()["trabalhadores"], 3)
+        self.assertEqual(server.snapshot()["em_obra"], 3)
 
 if __name__ == "__main__":
     unittest.main()

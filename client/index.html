@@ -72,10 +72,10 @@
     <section>
       <template v-if="papel === 'mestre'">
         <button :disabled="!conectado" @click="abrirVila">Abrir temporada</button>
-        <button disabled @click="encerrarVila">Encerrar temporada</button>
+        <button :disabled="!conectado || estado.fase !== 'aberta'" @click="encerrarVila">Encerrar temporada</button>
       </template>
-      <button v-else :disabled="!conectado" @click="construir">🔨 Construir (custo {{ estado.custo }} trigo)</button>
-      <p>As barras indicam o prazo das obras. Produção e conclusão são automáticas. Coleta, moagem e encerramento ainda indisponíveis.</p>
+      <button v-else :disabled="!conectado || estado.fase !== 'aberta'" @click="construir">🔨 Construir (custo {{ estado.custo }} trigo)</button>
+      <p>As barras indicam o prazo das obras. Produção e conclusão são automáticas. Coleta e moagem ainda indisponíveis.</p>
     </section>
 
     <ul class="avisos">
@@ -188,7 +188,7 @@
         this.barras.delete(id);
       }
       update() {
-        if (!this.referencia) return;
+        if (!this.referencia || this.encerrada) return;
         const agora = this.referencia.servidorEmMs + performance.now() - this.referencia.recebidoEm;
         for (const { barra, obra } of this.barras.values()) {
           const duracao = obra.concluir_em_ms - obra.iniciada_em_ms;
@@ -207,6 +207,7 @@
       // ----- um método para cada evento do servidor -----
       mostrarEstado(estado, referencia) {     // estado.sincronizado
         this.referencia = referencia;
+        this.encerrada = estado.fase === "encerrada";
         const ids = new Set(estado.obras.map((obra) => obra.id));
         for (const [id, desenho] of this.registros) {
           if (!ids.has(id)) {
@@ -259,9 +260,12 @@
         this.cameras.main.shake(180, 0.006);
         this.flutuar("✋ " + motivo, this.larg / 2, this.alt - 28, "#b00020");
       }
-      vilaEncerrada() {                       // vila.encerrada
+      vilaEncerrada() {
+        this.encerrada = true;
         this.faixa.setText("🌙 Temporada encerrada");
-        this.add.rectangle(this.larg / 2, this.alt / 2, this.larg, this.alt, 0x000033, 0.35).setDepth(5);
+        if (!this.sombraEncerrada) {
+          this.sombraEncerrada = this.add.rectangle(this.larg / 2, this.alt / 2, this.larg, this.alt, 0x000033, 0.35).setDepth(5);
+        }
       }
     }
 
@@ -371,6 +375,7 @@
       ouvir("estado.sincronizado", "atualizar estoques e reconciliar a cena sem repetir efeitos", (d) => {
         atualizar(d);
         jogo.mostrarEstado(d.estado, d.servidor_em_ms); // chamar() preserva também o instante de recebimento
+        if (d.estado.fase === "encerrada") jogo.vilaEncerrada();
       });
       ouvir("vila.iniciada", "atualizar a fase e mostrar a temporada aberta", (d) => {
         atualizar(d);
@@ -387,6 +392,11 @@
       ouvir("construcao.concluida", "liberar agricultor e reconciliar o moinho pela identidade", (d) => {
         atualizar(d);
         jogo.obraConcluida(d);
+      });
+      ouvir("vila.encerrada", "aplicar o retrato final, congelar barras e indicar a temporada encerrada", (d) => {
+        atualizar(d);
+        jogo.mostrarEstado(d.estado, d.servidor_em_ms);
+        jogo.vilaEncerrada();
       });
       ouvir("operacao.recusada", "mostrar o motivo; pedido sem alteração do estado", (d) => {
         atualizar(d);
@@ -421,7 +431,7 @@
         pedir("construcao.solicitada");
       }
       function encerrarVila() {
-        // ETAPA 6: pedir "vila.encerramento_solicitado"
+        pedir("vila.encerramento_solicitado");
       }
 
       return { nome, papel, conectado, entrou, conectando, erroConexao, estado, avisos, eventosVisiveis, contadores, ocultarProducao, porMinuto,

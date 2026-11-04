@@ -74,7 +74,7 @@ Não introduzir botões de alteração de estoque para preparar testes. Na etapa
 1. Em ensaio próprio, iniciar uma obra e encerrar com M antes dos 8 s.
 2. As três abas recebem `vila.encerrada`, com causa `vila.encerramento_solicitado`. Registrar o retrato final de trigo, farinha, ocupação e obras.
 3. Esperar mais de 20 s: nenhum fato de atividade nem alteração do retrato final; barras de progresso também ficam paradas.
-4. A tenta construir e recebe “A temporada não está aberta”. M tenta abrir e recebe “A temporada já foi aberta”; repetir encerramento recebe “A temporada não está aberta”. Recusas são privadas.
+4. Com os controles desabilitados fora da fase aberta, validar diretamente nos testes que um pedido de construção de A recebe “A temporada não está aberta”. M tenta abrir e recebe “A temporada já foi aberta”; repetir encerramento recebe “A temporada não está aberta”. Recusas são privadas.
 5. Recarregar B: o retrato final aparece, sem concluir obras ou empilhar efeitos visuais de encerramento. Verificar pedido de encerramento por Jogador nos testes automatizados.
 
 ## V6 — Moagem
