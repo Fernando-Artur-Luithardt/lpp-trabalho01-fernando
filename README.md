@@ -547,3 +547,45 @@ a essa sessão manual. Não há pendência funcional conhecida; os requisitos de
 milissegundos devem continuar sendo conferidos por testes controlados.
 
 Não existe `.specify/extensions.yml`; não há hooks de implementação registrados.
+
+## Convergência — T057: progresso das obras após encerramento
+
+Correção verificada em **2026-11-04**, limitada a T057. A reconciliação da cena
+calcula as barras de obras pendentes com
+`(encerrada_em_ms - iniciada_em_ms) / (concluir_em_ms - iniciada_em_ms)`, limitada
+entre 0 e 1. O cálculo usa o instante final do servidor em clientes presentes,
+recargas, entradas tardias e reconexões. Depois disso, o avanço por frame fica
+parado. Estoques, ocupação, status e prazos recebidos permanecem intactos.
+
+Regressão permanente: `tests/test_client_scene.mjs`, executável com Node.js
+(teste conferido em Node **26.10.0**; sem pacotes adicionais). O teste carrega o
+script de `client/index.html` e executa `criarJogo`, a fila `chamar`, a criação
+e a reconciliação reais da cena. Somente o relógio e as primitivas gráficas do
+Phaser são substituídos por dublês; o teste não copia o cálculo do progresso nem
+substitui `mostrarEstado`, `criarObra` ou `update`. Não é um teste de renderização
+em navegador nem uma sessão manual humana.
+
+Os **quatro casos falharam antes da correção e passaram depois**:
+
+- Obra de 8 segundos encerrada após 4 segundos: cliente presente apresenta 50%,
+  mesmo recebendo o encerramento muito depois; avanço do relógio não muda a barra.
+- Cena recriada para recarga/entrada tardia: 50%, inclusive quando o snapshot
+  chega antes de a cena existir e passa pela fila de chamadas.
+- Reconexão após avanço local até 100%: snapshot final restaura 50%; sucessivas
+  sincronizações preservam a barra, o canteiro e a quantidade de objetos.
+- Instantes fora dos limites resultam em 0% ou 100%; a obra continua pendente,
+  sem conclusão local. Os snapshots usados são congelados para detectar mutação.
+
+Comandos e resultados:
+
+```sh
+node --test tests/test_client_scene.mjs
+# 4 testes aprovados
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+# 38 testes aprovados
+git diff --check
+```
+
+**T057 concluída. T056 permanece pendente:** a sessão manual humana V1–V7 com
+Mestre/A/B será executada pelo responsável e registrada posteriormente. Esta
+correção e sua regressão automatizada não concluem essa aceitação.

@@ -193,9 +193,12 @@
       update() {
         if (!this.referencia || this.encerrada) return;
         const agora = this.referencia.servidorEmMs + performance.now() - this.referencia.recebidoEm;
+        this.atualizarBarras(agora);
+      }
+      atualizarBarras(instante) {
         for (const { barra, obra } of this.barras.values()) {
           const duracao = obra.concluir_em_ms - obra.iniciada_em_ms;
-          barra.scaleX = Phaser.Math.Clamp((agora - obra.iniciada_em_ms) / duracao, 0, 1);
+          barra.scaleX = Phaser.Math.Clamp((instante - obra.iniciada_em_ms) / duracao, 0, 1);
         }
         // A barra cheia nunca altera status, recursos ou ocupação.
       }
@@ -239,7 +242,10 @@
           }
         });
         this.usados = estado.obras.length;
-        this.update();
+        // Reconstituir o progresso final também em cenas novas ou reconectadas.
+        // O horário de recebimento e o relógio local não avançam uma obra encerrada.
+        if (this.encerrada) this.atualizarBarras(estado.encerrada_em_ms);
+        else this.update();
         this.faixa.setText(estado.fase === "aguardando" ? "⏳ Aguardando o Mestre"
           : estado.fase === "aberta" ? "☀️ Temporada aberta" : "🌙 Temporada encerrada");
       }
